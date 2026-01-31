@@ -5,6 +5,7 @@ import httpx
 from typing import Dict, Any, List, Optional
 
 from .models import PolicyDecision, PolicyRule
+from .risk_policy import risk_policy_manager, RiskPolicyManager
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -13,16 +14,23 @@ logger = logging.getLogger(__name__)
 class PolicyEngine:
     """Policy engine for authorization with OPA integration."""
     
-    def __init__(self, opa_url: str = None, fallback_to_simple: bool = True):
+    def __init__(
+        self,
+        opa_url: str = None,
+        fallback_to_simple: bool = True,
+        risk_manager: Optional[RiskPolicyManager] = None
+    ):
         """Initialize policy engine.
         
         Args:
             opa_url: OPA server URL
             fallback_to_simple: If True, use simple RBAC when OPA unavailable
+            risk_manager: Risk policy manager for tool risk enforcement
         """
         self.opa_url = opa_url or settings.OPA_URL
         self.fallback_to_simple = fallback_to_simple
         self.opa_enabled = settings.OPA_ENABLED
+        self.risk_manager = risk_manager or risk_policy_manager
         
         # Simple RBAC rules (fallback when OPA not available)
         self.simple_rules = self._initialize_simple_rules()
@@ -70,6 +78,18 @@ class PolicyEngine:
         
         logger.debug(f"Policy evaluation: {action}:{resource} for user {user_id} with roles {roles}")
         
+        # Check tool risk policy if tool context provided
+        tool = context.get("tool")
+        if tool and hasattr(tool, 'risk_level'):
+            risk_decision = self._evaluate_risk_policy(tool, context)
+            if not risk_decision["allowed"]:
+                return PolicyDecision(
+                    allowed=False,
+                    reason=risk_decision["reason"],
+                    policies_evaluated=["risk_policy"],
+                    metadata=risk_decision
+                )
+        
         # Try OPA first if enabled
         if self.opa_enabled:
             try:
@@ -89,6 +109,42 @@ class PolicyEngine:
         decision = self._evaluate_simple(action, resource, roles)
         logger.info(f"Simple RBAC decision: {decision.allowed} - {decision.reason}")
         return decision
+    
+    def _evaluate_risk_policy(
+        self,
+        tool: Any,
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Evaluate risk-based policy for tool.
+        
+        Args:
+            tool: Tool object with risk attributes
+            context: Request context
+            
+        Returns:
+            Risk evaluation result
+        """
+        # Get user role (use first role if multiple)
+        roles = context.get("roles", [])
+        user_role = roles[0] if roles else "user"
+        
+        # Check if user is elevated (from PIM/PAM)
+        is_elevated = context.get("is_elevated", False)
+        
+        # Evaluate access based on tool risk
+        risk_result = self.risk_manager.evaluate_access(
+            tool_risk_level=tool.risk_level,
+            user_role=user_role,
+            is_elevated=is_elevated
+        )
+        
+        logger.info(
+            f"Risk policy for {tool.name} (risk={tool.risk_level}): "
+            f"allowed={risk_result['allowed']}, reason={risk_result['reason']}"
+        )
+        
+        return risk_result
     
     async def _evaluate_opa(
         self,

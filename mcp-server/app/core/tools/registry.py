@@ -28,6 +28,13 @@ class Tool:
     version: str = "1.0.0"
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    
+    # Risk & Privilege Management (P0-3)
+    risk_level: str = "read"  # read, write, privileged
+    requires_elevation: bool = False
+    requires_approval: bool = False
+    max_concurrent_executions: int = 10
+    rate_limit_tier: str = "standard"  # permissive, standard, strict
 
 
 class ToolRegistry:

@@ -4,6 +4,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 from jose import JWTError, jwt
+from .jwks_client import JWKSClient
+from .oidc_validator import OIDCTokenValidator
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +18,8 @@ class JWTHandler:
         secret_key: str,
         algorithm: str = "HS256",
         access_token_expire_minutes: int = 60,
-        refresh_token_expire_days: int = 7
+        refresh_token_expire_days: int = 7,
+        oidc_validator: Optional[OIDCTokenValidator] = None
     ):
         """Initialize JWT handler.
         
@@ -25,11 +28,13 @@ class JWTHandler:
             algorithm: JWT algorithm (HS256, RS256, etc.)
             access_token_expire_minutes: Access token expiry in minutes
             refresh_token_expire_days: Refresh token expiry in days
+            oidc_validator: Optional OIDC validator for external tokens
         """
         self.secret_key = secret_key
         self.algorithm = algorithm
         self.access_token_expire_minutes = access_token_expire_minutes
         self.refresh_token_expire_days = refresh_token_expire_days
+        self.oidc_validator = oidc_validator
     
     def create_access_token(
         self,
@@ -104,6 +109,20 @@ class JWTHandler:
         Raises:
             ValueError: If token is invalid or expired
         """
+        # If OIDC validator is configured, use it for external tokens
+        if self.oidc_validator:
+            try:
+                # Try OIDC validation first (for tokens from external IdP)
+                import asyncio
+                loop = asyncio.get_event_loop()
+                payload = loop.run_until_complete(self.oidc_validator.validate_token(token))
+                logger.debug(f"Token verified via OIDC for user: {payload.get('sub')}")
+                return payload
+            except Exception as e:
+                logger.debug(f"OIDC validation failed, falling back to HS256: {e}")
+                # Fall through to local validation
+        
+        # Local token validation (HS256)
         try:
             payload = jwt.decode(
                 token,

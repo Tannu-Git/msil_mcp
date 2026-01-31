@@ -7,6 +7,7 @@ from datetime import datetime
 
 from .models import AuditEvent
 from .pii_masker import pii_masker
+from .s3_store import S3WORMStore
 
 logger = logging.getLogger(__name__)
 
@@ -14,15 +15,22 @@ logger = logging.getLogger(__name__)
 class AuditService:
     """Audit logging service for compliance with 12-month retention."""
     
-    def __init__(self, db=None, s3_client=None):
+    def __init__(
+        self,
+        db=None,
+        s3_client: Optional[S3WORMStore] = None,
+        dual_write: bool = True
+    ):
         """Initialize audit service.
         
         Args:
             db: Database connection (for PostgreSQL storage)
-            s3_client: S3 client (for WORM storage)
+            s3_client: S3 WORM store client
+            dual_write: Write to both DB and S3
         """
         self.db = db
         self.s3 = s3_client
+        self.dual_write = dual_write
         self._in_memory_logs = []  # Fallback if DB not available
     
     async def log_event(self, event: AuditEvent):
@@ -40,10 +48,19 @@ class AuditService:
             if event.user_id:
                 event.user_id = self._mask_user_id(event.user_id)
             
+            # Write to S3 WORM storage
+            if self.s3:
+                try:
+                    await self.s3.write_audit_event(event.to_dict())
+                    logger.info(f"Audit event written to S3 WORM: {event.event_type}")
+                except Exception as e:
+                    logger.error(f"Failed to write audit event to S3: {e}")
+                    # Continue to DB write if dual_write enabled
+            
             # Log to database if available
-            if self.db:
+            if self.db and (self.dual_write or not self.s3):
                 await self._log_to_database(event)
-            else:
+            elif not self.db and not self.s3:
                 # Fallback: store in memory (for demo)
                 self._in_memory_logs.append(event.to_dict())
                 logger.info(f"Audit event logged to memory: {event.event_type}")

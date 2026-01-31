@@ -12,6 +12,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from app.config import settings
 from app.core.tools.registry import tool_registry
 from app.core.metrics.collector import metrics_collector
+from app.core.idempotency.store import IdempotencyStore
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +23,9 @@ class ToolExecutor:
     Supports: Mock API (local) and MSIL APIM (production)
     """
     
-    def __init__(self):
+    def __init__(self, idempotency_store: Optional[IdempotencyStore] = None):
         self._http_client: Optional[httpx.AsyncClient] = None
+        self.idempotency_store = idempotency_store
     
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client"""
@@ -58,7 +60,9 @@ class ToolExecutor:
         self,
         tool_name: str,
         arguments: Dict[str, Any],
-        correlation_id: str
+        correlation_id: str,
+        idempotency_key: Optional[str] = None,
+        user_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Execute a tool with given arguments
@@ -67,10 +71,44 @@ class ToolExecutor:
             tool_name: Name of the tool to execute
             arguments: Tool arguments
             correlation_id: Request correlation ID
+            idempotency_key: Optional idempotency key for write operations
+            user_id: Optional user ID for idempotency isolation
             
         Returns:
             Tool execution result
         """
+        # Get tool definition first to check if it's a write operation
+        tool = await tool_registry.get_tool(tool_name)
+        if not tool:
+            raise ValueError(f"Tool not found: {tool_name}")
+        
+        # Check idempotency for write operations
+        is_write_operation = tool.http_method.upper() in ["POST", "PUT", "DELETE", "PATCH"]
+        
+        if is_write_operation and self.idempotency_store and settings.IDEMPOTENCY_ENABLED:
+            # Handle idempotency key
+            if not idempotency_key:
+                if settings.IDEMPOTENCY_REQUIRED:
+                    raise ValueError("Idempotency-Key header required for write operations")
+                # Generate key automatically
+                idempotency_key = self.idempotency_store.generate_key({
+                    "tool": tool_name,
+                    "params": arguments,
+                    "user": user_id or "anonymous"
+                })
+                logger.info(f"Auto-generated idempotency key: {idempotency_key[:8]}...")
+            
+            # Check if we've seen this key before
+            if user_id:
+                cached_response = await self.idempotency_store.get_response(
+                    idempotency_key,
+                    user_id
+                )
+                
+                if cached_response:
+                    logger.info(f"[{correlation_id}] Returning cached response for idempotency key")
+                    return cached_response
+        
         # Track execution with metrics collector
         async with metrics_collector.track_execution(tool_name, arguments) as execution_id:
             start_time = time.time()
@@ -127,11 +165,22 @@ class ToolExecutor:
                 
                 logger.info(f"[{correlation_id}] Tool {tool_name} executed successfully in {execution_time}ms")
                 
-                return {
+                result_data = {
                     "success": True,
                     "data": result,
                     "execution_time_ms": execution_time
                 }
+                
+                # Cache result for write operations with idempotency
+                if is_write_operation and self.idempotency_store and settings.IDEMPOTENCY_ENABLED:
+                    if idempotency_key and user_id:
+                        await self.idempotency_store.store_response(
+                            idempotency_key,
+                            user_id,
+                            result_data
+                        )
+                
+                return result_data
                 
             except httpx.TimeoutException as e:
                 logger.error(f"[{correlation_id}] Tool execution timeout: {tool_name}")
