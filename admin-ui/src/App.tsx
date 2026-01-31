@@ -8,6 +8,7 @@ import Login from './pages/Login'
 import Policies from './pages/Policies'
 import AuditLogs from './pages/AuditLogs'
 import Settings from './pages/Settings'
+import ServiceBookingWizard from './pages/ServiceBookingWizard'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -48,6 +49,7 @@ function AppRoutes() {
                     <Route path="/policies" element={<Policies />} />
                     <Route path="/audit-logs" element={<AuditLogs />} />
                     <Route path="/settings" element={<Settings />} />
+                    <Route path="/service-booking" element={<ServiceBookingWizard />} />
                   </Routes>
                 </main>
               </div>

@@ -1,0 +1,255 @@
+Security architecture
+
+1) Security Goals & Threat Model (what we’re defending against)
+Core security goals (aligned to RFP)
+•	Strong authentication & authorization for tool discovery and invocation. 
+MCP_Server
+•	Least privilege access to APIM and downstream systems.
+•	Prevent tool misuse (prompt injection, unauthorized invocation, data exfiltration).
+•	Protect PII (discard/mask where applicable, especially logs and telemetry) (client direction).
+•	Governance without impacting existing applications (rate-limit parity, isolation). 
+MCP_Server
+•	Tamper-evident auditing + 12-month retention for compliance. 
+MCP_Server
+Threats we assume are realistic
+•	Client/agent tries to call tools it shouldn’t (privilege escalation).
+•	Prompt injection attempts to cause harmful tool use or data leakage.
+•	Input tampering / schema bypass.
+•	Abuse/DoS that impacts APIM or backend workloads.
+•	Token leakage / secrets exposure via logs/stack traces.
+•	Replay attacks on transactional operations (double booking).
+•	Lateral movement in AWS runtime if container compromised.
+________________________________________
+2) End-to-End Security Architecture (layers)
+Layer A — Perimeter & Network Security
+A1. Secure exposure (public MCP endpoint with security)
+If MSIL requires MCP to be publicly reachable (client note):
+•	TLS 1.2+ end-to-end.
+•	WAF in front of MCP Gateway (rate limits, IP reputation, OWASP protections).
+•	DDoS protection (cloud-native shielding).
+•	Restrict exposure further using:
+o	IP allowlists (for demo users), and/or
+o	mTLS for enterprise clients, and/or
+o	PrivateLink/VPN for non-demo production.
+Key principle: public reachability is fine only if auth and policies are strong and logs are immutable.
+A2. VPC segmentation
+•	MCP Gateway and execution runtime run in private subnets (as much as feasible).
+•	Egress to APIM is via controlled routes and security groups.
+•	Optional: egress firewall / NAT with allowlisting to only APIM endpoints.
+A3. Internal service-to-service security
+•	mTLS between gateway and internal executor modules (recommended).
+•	Short-lived service credentials (IAM roles for service accounts).
+________________________________________
+Layer B — Identity, Authentication & Session Security (OAuth2/OIDC)
+MSIL explicitly expects OAuth2/OIDC. 
+MCP_Server
+B1. Authentication flow
+•	MCP client authenticates against MSIL-approved IdP (OIDC).
+•	Client sends Bearer access token to MCP Gateway.
+•	Gateway validates:
+o	signature (JWKS)
+o	issuer/audience
+o	expiry, nonce if applicable
+o	required scopes/claims
+B2. Token handling hard rules
+•	Never log tokens.
+•	Token passed only to auth middleware, not to tool code.
+•	Use short expiry (minutes) + refresh token patterns (client-side).
+•	Optional: “token binding” or mTLS to reduce replay risk.
+________________________________________
+Layer C — Authorization & Governance (RBAC + PIM/PAM + allow/deny lists)
+MSIL explicitly expects RBAC, PIM/PAM, allow/deny lists. 
+MCP_Server
+C1. Two-stage authorization (critical)
+Stage 1: Tool discovery authorization
+•	When client asks “what tools are available?”, gateway returns only tools allowed for:
+o	user role
+o	client application identity
+o	environment (dev/qa/prod)
+o	journey (ServiceBooking only for demo)
+Stage 2: Tool invocation authorization
+•	Even if a tool is visible, invocation is checked again:
+o	role + scope
+o	allowlist rules
+o	tool-specific constraints (time window, environment, risk tier)
+This blocks “hidden tool” attacks and reduces token burn by not exposing everything.
+C2. Policy model (Pattern A internal read/write governance)
+We keep journey tool bundle unified, but tag each tool:
+•	risk_level = read | write
+•	roles_allowed
+•	requires_step_up (optional)
+•	rate_limit_tier
+•	pii_policy
+Write tools (e.g., create_service_booking) get stricter enforcement:
+•	tighter rate limits/concurrency
+•	idempotency required
+•	step-up approval or “user_confirmed=true”
+•	higher audit level
+C3. PIM/PAM integration (how to implement without overbuilding)
+Because “PIM/PAM” integration depth can vary, implement a pluggable check:
+•	On invoking privileged tools, gateway checks:
+o	“is user currently elevated?” (PIM state)
+o	“is session approved?” (PAM check)
+•	If not elevated, reject with an actionable error (for demo, show policy deny).
+Clarification to confirm with MSIL: which PAM/PIM system and what claims/attributes represent elevation. But the design supports it.
+________________________________________
+Layer D — Input Validation & Tool Safety (anti-injection, anti-tampering)
+MSIL explicitly asks for schema validation and output sanitization. 
+MCP_Server
+D1. Strict JSON Schema validation (non-negotiable)
+Every tool has:
+•	input schema
+•	allowed enums/patterns
+•	required fields
+•	max lengths / max items
+Gateway rejects:
+•	extra unexpected fields (deny additionalProperties)
+•	invalid patterns (mobile/reg formats)
+•	oversized payloads
+This is the primary defense against prompt injection turning into harmful tool calls.
+D2. Safe tool execution rules (server-side)
+•	Tools are the only execution channel. No direct “free text to backend”.
+•	Tools are deterministic wrappers around APIM operations.
+•	Enforce:
+o	maximum downstream calls per user request (prevents fan-out abuse)
+o	timeouts and bounded retries
+o	concurrency caps per tool
+D3. Transaction safety for write tools
+•	Idempotency keys for booking creation to prevent duplicates.
+•	Replay protection via:
+o	request signatures (optional)
+o	dedupe store (optional for prod)
+•	Mandatory user_confirmed or equivalent in input schema for create operations (prevents accidental writes from ambiguous prompts).
+________________________________________
+Layer E — Downstream Security to APIM (least privilege + parity)
+MSIL requires rate-limit parity with API manager. 
+MCP_Server
+E1. Dedicated APIM identity for MCP traffic
+•	Use a dedicated APIM subscription/client for MCP channel.
+•	Benefits:
+o	separate quotas/analytics
+o	easy throttling to avoid impacting existing apps
+o	revocation without affecting others
+E2. Identity propagation (user context)
+Two valid modes (choose based on MSIL policy):
+1.	Service-to-service mode: MCP runtime calls APIM as a service principal; includes user claims as headers (signed) if needed.
+2.	On-behalf-of mode: MCP calls APIM using delegated tokens (more complex).
+Don’t assume mode 2 unless MSIL demands it.
+E3. Network trust
+•	Prefer private connectivity to APIM if possible (reduces exposure).
+•	Always validate TLS certs; pin issuer if needed.
+________________________________________
+Layer F — Data Protection & PII Controls
+F1. Data minimization
+•	Return only fields required for next step (compact payloads). 
+MCP_Server
+•	Avoid returning PII by default.
+F2. PII masking/redaction
+Per “discard PII where applicable” (client direction):
+•	Logs/metrics/traces: mask mobile numbers, registration numbers, names.
+•	Audit logs: store minimal identifiers (e.g., hashed user ID, tool name, booking ID, timestamps).
+•	Dashboards: no PII in labels.
+F3. Encryption
+•	In transit: TLS
+•	At rest:
+o	secrets via KMS-backed stores
+o	logs/audit storage encrypted (KMS)
+________________________________________
+Layer G — Secrets Management (secrets isolation)
+Explicit requirement. 
+MCP_Server
+G1. Where secrets live
+•	AWS Secrets Manager (or MSIL equivalent) for:
+o	APIM credentials
+o	registry/admin service creds
+o	signing keys
+G2. How secrets are used
+•	Retrieved at runtime via IAM roles (no baked secrets).
+•	Rotated periodically; rotation does not require code change.
+G3. Guardrails
+•	Never place secrets in environment variables that get dumped in crash logs.
+•	Disable debug endpoints.
+•	Redact sensitive config values from health endpoints.
+________________________________________
+Layer H — Observability & Audit (tamper-evident, 12-month retention)
+MSIL requires dashboards + audit logs retained 12 months; tamper-evident trails. 
+MCP_Server
+MCP_Server
+H1. What we log (security events)
+For each tool invocation:
+•	correlation_id
+•	user identity (minimized)
+•	tool name/version
+•	policy decision allow/deny + reason
+•	downstream APIM status
+•	latency + error class
+•	no raw PII payloads
+H2. Tamper-evident audit store (WORM)
+•	Store audit logs in WORM-capable storage (immutability retention).
+•	Retain 12 months minimum.
+H3. Dashboards (demo-critical)
+•	tool invocation count
+•	error rate
+•	policy denies by reason
+•	throttling events
+•	latency percentiles
+This supports Stage-2 “review dashboards + audit logs” requirement. 
+MCP_Server
+________________________________________
+Layer I — Platform hardening (runtime security)
+I1. Container/K8s hardening (EKS/ECS)
+•	Non-root containers
+•	Read-only filesystem (where feasible)
+•	Drop Linux capabilities
+•	Network policies (only allow APIM destinations)
+•	Image scanning + signed images
+I2. Runtime controls
+•	Limit egress
+•	Resource quotas/limits
+•	Pod security standards / task role boundaries
+________________________________________
+3) DevSecOps Security (build-time + release-time)
+Stage-1 requires CI/CD and security scans, unit/integration tests, negative tests. 
+MCP_Server
+Build-time controls
+•	SAST, dependency scans
+•	Container image scanning
+•	IaC scanning
+•	Secrets scanning (prevent commit)
+Release-time controls
+•	Environment promotion gates (Dev→QA→Prod)
+•	Policy and tool bundle approvals in registry/admin
+•	Change logs and version tagging linked to OpenAPI versions
+Test coverage (security-specific)
+•	Unauthorized tool discovery/invocation tests
+•	Schema fuzzing tests
+•	Prompt injection attempt scenarios (ensure blocked by schema + allowlists)
+•	Rate-limit and abuse tests (ensure parity with APIM)
+________________________________________
+4) Walkthrough: Secure Service Booking (Stage-2 demo) in 10 steps
+This is the exact “security narrative” you can use while demoing:
+1.	User authenticates to MCP client (OIDC).
+2.	Client sends token to MCP Gateway.
+3.	Gateway validates token and extracts roles/scopes. 
+MCP_Server
+4.	Client requests tool discovery → gateway returns only ServiceBooking tools allowed for that role (reduces token burn). 
+MCP_Server
+5.	Client invokes read tools → schema validation prevents malformed inputs. 
+MCP_Server
+6.	Gateway enforces rate limits and concurrency caps (parity with APIM). 
+MCP_Server
+7.	For create_service_booking, gateway requires write role + optional “user_confirmed”.
+8.	Execution engine calls APIM using dedicated MCP subscription identity (isolated from existing apps).
+9.	Audit event written (immutable store) and dashboard metrics updated. 
+MCP_Server
+10.	MSIL validates DB entry + code traces show policy checks and guardrails. 
+MCP_Server
+________________________________________
+5) What you should not do (common mistakes that MSIL will catch in tracing)
+•	Don’t let the LLM build raw URLs or payloads without schema validation.
+•	Don’t expose hundreds of tools during demo (“tool sprawl”).
+•	Don’t log request/response bodies containing PII.
+•	Don’t share APIM secrets/tokens with the client.
+•	Don’t skip idempotency on booking creation (duplicate booking risk).
+•	Don’t rely on “prompt instructions” as security. Security must be enforced in code/policy.
+

@@ -5,7 +5,7 @@ Implements Model Context Protocol for tool discovery and execution
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -13,6 +13,7 @@ from app.core.tools.registry import tool_registry
 from app.core.tools.executor import tool_executor
 from app.core.batch.batch_executor import batch_executor, BatchRequest as CoreBatchRequest
 from app.core.response.shaper import response_shaper, ResponseConfig
+from app.core.streaming.sse import create_sse_response, send_tool_progress, send_tool_result
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -374,5 +375,98 @@ async def shape_response(request: ResponseShapeRequest):
         "shaped_token_estimate": shaped_tokens,
         "token_savings": original_tokens - shaped_tokens,
         "savings_percentage": round((1 - shaped_tokens / original_tokens) * 100, 1) if original_tokens > 0 else 0
+    }
+
+
+# ============================================
+# P2 Features: SSE Streaming Support
+# ============================================
+
+@router.get("/mcp/stream/{stream_id}")
+async def stream_tool_execution(stream_id: str, request: Request):
+    """
+    Server-Sent Events stream for real-time tool execution updates
+    
+    Usage:
+    1. Create stream: GET /mcp/stream/{stream_id}
+    2. Execute tool with stream_id parameter
+    3. Receive progress updates in real-time
+    
+    Events:
+    - connected: Initial connection
+    - tool_progress: Progress updates (0-100%)
+    - tool_result: Final result
+    - tool_error: Error occurred
+    """
+    return await create_sse_response(stream_id, request)
+
+
+@router.post("/mcp/tools/{tool_name}/call-stream")
+async def call_tool_with_stream(
+    tool_name: str,
+    arguments: Dict[str, Any],
+    stream_id: Optional[str] = None,
+    x_correlation_id: Optional[str] = Header(None, alias="X-Correlation-ID")
+):
+    """
+    Execute tool with SSE streaming progress updates
+    
+    Returns immediately with stream_id. Progress sent via SSE.
+    """
+    correlation_id = x_correlation_id or str(uuid.uuid4())
+    stream_id = stream_id or f"stream-{uuid.uuid4()}"
+    
+    # Start async execution (would use background task in production)
+    import asyncio
+    
+    async def execute_with_progress():
+        try:
+            # Send progress: starting
+            await send_tool_progress(
+                stream_id=stream_id,
+                tool_name=tool_name,
+                progress=0,
+                message="Tool execution starting"
+            )
+            
+            # Send progress: 50%
+            await send_tool_progress(
+                stream_id=stream_id,
+                tool_name=tool_name,
+                progress=50,
+                message="Executing tool"
+            )
+            
+            # Execute tool
+            result = await tool_executor.execute(
+                tool_name=tool_name,
+                arguments=arguments,
+                correlation_id=correlation_id
+            )
+            
+            # Send result
+            await send_tool_result(
+                stream_id=stream_id,
+                tool_name=tool_name,
+                result=result,
+                success=True
+            )
+            
+        except Exception as e:
+            await send_tool_result(
+                stream_id=stream_id,
+                tool_name=tool_name,
+                result=None,
+                success=False,
+                error=str(e)
+            )
+    
+    # Start background execution
+    asyncio.create_task(execute_with_progress())
+    
+    return {
+        "stream_id": stream_id,
+        "message": "Tool execution started. Connect to SSE stream for updates.",
+        "stream_url": f"/api/mcp/stream/{stream_id}"
     }
 

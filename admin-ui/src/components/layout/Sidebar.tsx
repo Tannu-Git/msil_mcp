@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Wrench, Settings, Car, Upload, Shield, FileText } from 'lucide-react'
+import { LayoutDashboard, Wrench, Settings, Car, Upload, Shield, FileText, Calendar } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
@@ -8,6 +8,7 @@ const navItems = [
   { icon: Upload, label: 'Import OpenAPI', path: '/import' },
   { icon: Shield, label: 'Policies', path: '/policies' },
   { icon: FileText, label: 'Audit Logs', path: '/audit-logs' },
+  { icon: Calendar, label: 'Service Booking', path: '/service-booking' },
   { icon: Settings, label: 'Settings', path: '/settings' },
 ]
 
