@@ -6,6 +6,8 @@ import time
 import json
 from typing import Any, Dict, Optional
 import httpx
+from circuitbreaker import circuit
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from app.config import settings
 from app.core.tools.registry import tool_registry
@@ -101,17 +103,15 @@ class ToolExecutor:
                 
                 logger.info(f"[{correlation_id}] Executing {tool_name}: {tool.http_method} {url}")
                 
-                # Execute request
-                if tool.http_method.upper() == "GET":
-                    response = await client.get(url, headers=headers, params=arguments)
-                elif tool.http_method.upper() == "POST":
-                    response = await client.post(url, headers=headers, json=arguments)
-                elif tool.http_method.upper() == "PUT":
-                    response = await client.put(url, headers=headers, json=arguments)
-                elif tool.http_method.upper() == "DELETE":
-                    response = await client.delete(url, headers=headers)
-                else:
-                    raise ValueError(f"Unsupported HTTP method: {tool.http_method}")
+                # Execute request with retry and circuit breaker
+                response = await self._execute_with_retry(
+                    client=client,
+                    method=tool.http_method.upper(),
+                    url=url,
+                    headers=headers,
+                    json_data=arguments,
+                    correlation_id=correlation_id
+                )
                 
                 execution_time = int((time.time() - start_time) * 1000)
                 
@@ -140,6 +140,44 @@ class ToolExecutor:
             except Exception as e:
                 logger.error(f"[{correlation_id}] Tool execution error: {str(e)}")
                 raise
+    
+    @circuit(failure_threshold=5, recovery_timeout=60, expected_exception=httpx.HTTPError)
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError, httpx.ReadTimeout)),
+        reraise=True
+    )
+    async def _execute_with_retry(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        url: str,
+        headers: Dict,
+        json_data: Dict,
+        correlation_id: str
+    ) -> httpx.Response:
+        """
+        Execute HTTP request with retry and circuit breaker
+        
+        Retry: 3 attempts with exponential backoff (2s, 4s, 8s)
+        Circuit Breaker: Opens after 5 failures, recovers after 60 seconds
+        """
+        logger.debug(f"[{correlation_id}] Executing {method} {url} with retry")
+        
+        if method == "GET":
+            response = await client.get(url, headers=headers, params=json_data)
+        elif method == "POST":
+            response = await client.post(url, headers=headers, json=json_data)
+        elif method == "PUT":
+            response = await client.put(url, headers=headers, json=json_data)
+        elif method == "DELETE":
+            response = await client.delete(url, headers=headers)
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+        
+        response.raise_for_status()
+        return response
     
     async def close(self):
         """Close HTTP client"""

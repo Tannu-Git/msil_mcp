@@ -10,6 +10,19 @@ class PIIMasker:
     # Regex patterns for PII detection
     PHONE_PATTERN = re.compile(r'\b\d{10}\b|\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b')
     EMAIL_PATTERN = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
+    # Credit card pattern (basic - matches 13-19 digit card numbers)
+    CREDIT_CARD_PATTERN = re.compile(r'\b\d{13,19}\b')
+    # PAN (Permanent Account Number) - Indian tax ID
+    PAN_PATTERN = re.compile(r'\b[A-Z]{5}\d{4}[A-Z]\b')
+    # Aadhaar pattern (Indian national ID)
+    AADHAAR_PATTERN = re.compile(r'\b\d{4}\s?\d{4}\s?\d{4}\b')
+    
+    # Fields that commonly contain PII
+    PII_FIELD_NAMES = {
+        'password', 'secret', 'token', 'apikey', 'api_key',
+        'ssn', 'social_security', 'credit_card', 'cvv',
+        'pan', 'aadhaar', 'passport', 'license'
+    }
     
     @staticmethod
     def mask_phone(text: str) -> str:
@@ -54,7 +67,60 @@ class PIIMasker:
         
         text = PIIMasker.mask_phone(text)
         text = PIIMasker.mask_email(text)
+        text = PIIMasker.mask_credit_card(text)
+        text = PIIMasker.mask_pan(text)
+        text = PIIMasker.mask_aadhaar(text)
         return text
+    
+    @staticmethod
+    def mask_credit_card(text: str) -> str:
+        """Mask credit card numbers.
+        
+        Example: 1234567890123456 -> 1234********3456
+        """
+        if not text:
+            return text
+        
+        def mask_match(match):
+            card = match.group()
+            if len(card) >= 8:
+                return f"{card[:4]}{'*' * (len(card) - 8)}{card[-4:]}"
+            return "***"
+        
+        return PIIMasker.CREDIT_CARD_PATTERN.sub(mask_match, text)
+    
+    @staticmethod
+    def mask_pan(text: str) -> str:
+        """Mask PAN (Indian tax ID).
+        
+        Example: ABCDE1234F -> ABC*****4F
+        """
+        if not text:
+            return text
+        
+        def mask_match(match):
+            pan = match.group()
+            return f"{pan[:3]}*****{pan[-2:]}"
+        
+        return PIIMasker.PAN_PATTERN.sub(mask_match, text)
+    
+    @staticmethod
+    def mask_aadhaar(text: str) -> str:
+        """Mask Aadhaar (Indian national ID).
+        
+        Example: 1234 5678 9012 -> 1234 **** 9012
+        """
+        if not text:
+            return text
+        
+        def mask_match(match):
+            aadhaar = match.group()
+            parts = aadhaar.split()
+            if len(parts) == 3:
+                return f"{parts[0]} **** {parts[2]}"
+            return "****"
+        
+        return PIIMasker.AADHAAR_PATTERN.sub(mask_match, text)
     
     @staticmethod
     def mask_dict(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -64,7 +130,11 @@ class PIIMasker:
         
         masked = {}
         for key, value in data.items():
-            if isinstance(value, str):
+            # Check if field name suggests PII
+            if key.lower() in PIIMasker.PII_FIELD_NAMES:
+                # Completely mask sensitive fields
+                masked[key] = "***REDACTED***"
+            elif isinstance(value, str):
                 # Mask string values
                 masked[key] = PIIMasker.mask_text(value)
             elif isinstance(value, dict):

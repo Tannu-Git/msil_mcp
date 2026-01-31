@@ -5,9 +5,8 @@ from typing import Dict
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 
-from app.core.auth import OAuth2Provider, JWTHandler, UserInfo
-from app.core.auth.models import TokenResponse
-from app.core.auth.oauth2_provider import get_oauth2_provider, get_current_user
+from app.core.auth.oauth2_provider import OAuth2Provider, get_oauth2_provider, get_current_user
+from app.core.auth.models import UserInfo, TokenResponse
 from app.config import settings
 
 logger = logging.getLogger(__name__)

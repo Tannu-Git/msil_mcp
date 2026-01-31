@@ -25,7 +25,9 @@ class Settings(BaseSettings):
     
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_ENABLED: bool = True
     CACHE_TTL: int = 300  # 5 minutes
+    CACHE_MAX_SIZE: int = 1000  # Max cache entries
     
     # API Gateway Mode: "mock" or "msil_apim"
     API_GATEWAY_MODE: str = "mock"
@@ -64,6 +66,21 @@ class Settings(BaseSettings):
     AUDIT_ENABLED: bool = True
     AUDIT_S3_BUCKET: Optional[str] = None
     AUDIT_RETENTION_DAYS: int = 365  # 12 months
+    
+    # Resilience
+    CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = 5
+    CIRCUIT_BREAKER_RECOVERY_TIMEOUT: int = 60  # seconds
+    RETRY_MAX_ATTEMPTS: int = 3
+    RETRY_EXPONENTIAL_BASE: int = 2  # seconds
+    
+    # Rate Limiting
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_PER_USER: int = 100  # requests per minute
+    RATE_LIMIT_PER_TOOL: int = 50   # requests per minute
+    
+    # Batch Execution
+    BATCH_MAX_CONCURRENCY: int = 10
+    BATCH_MAX_SIZE: int = 20  # Maximum tools per batch
     
     # Logging
     LOG_LEVEL: str = "INFO"

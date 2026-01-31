@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.core.tools.registry import tool_registry
 from app.core.tools.executor import tool_executor
+from app.core.batch.batch_executor import batch_executor, BatchRequest as CoreBatchRequest
+from app.core.response.shaper import response_shaper, ResponseConfig
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -236,3 +238,141 @@ async def call_tool_rest(
         "result": result,
         "correlation_id": correlation_id
     }
+
+
+# ============================================
+# P1 Features: Batch Execution & Response Shaping
+# ============================================
+
+class BatchToolRequest(BaseModel):
+    """Single tool request in a batch"""
+    tool_name: str = Field(..., description="Name of the tool to execute")
+    arguments: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
+    request_id: Optional[str] = Field(None, description="Optional request ID for tracking")
+
+
+class BatchExecutionRequest(BaseModel):
+    """Batch tool execution request"""
+    requests: List[BatchToolRequest] = Field(..., description="List of tool requests", max_length=20)
+    parallel: bool = Field(default=True, description="Execute in parallel (True) or sequential (False)")
+    stop_on_error: bool = Field(default=False, description="Stop on first error (sequential mode only)")
+
+
+class BatchToolResult(BaseModel):
+    """Result of a single tool in batch"""
+    request_id: str
+    tool_name: str
+    success: bool
+    data: Optional[Any] = None
+    error: Optional[str] = None
+    execution_time_ms: int
+
+
+class BatchExecutionResponse(BaseModel):
+    """Batch execution response"""
+    results: List[BatchToolResult]
+    statistics: Dict[str, Any]
+    correlation_id: str
+
+
+@router.post("/mcp/batch", response_model=BatchExecutionResponse)
+async def execute_batch_tools(
+    request: BatchExecutionRequest,
+    x_correlation_id: Optional[str] = Header(None, alias="X-Correlation-ID")
+):
+    """
+    Execute multiple tools in parallel or sequential
+    
+    Max 20 tools per batch for safety
+    """
+    correlation_id = x_correlation_id or str(uuid.uuid4())
+    
+    # Validate batch size
+    if len(request.requests) > settings.BATCH_MAX_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch size exceeds maximum of {settings.BATCH_MAX_SIZE}"
+        )
+    
+    # Convert to core batch requests
+    batch_requests = [
+        CoreBatchRequest(
+            tool_name=req.tool_name,
+            arguments=req.arguments,
+            request_id=req.request_id or str(uuid.uuid4())
+        )
+        for req in request.requests
+    ]
+    
+    # Execute batch
+    if request.parallel:
+        results = await batch_executor.execute_batch(batch_requests, correlation_id)
+    else:
+        results = await batch_executor.execute_batch_sequential(
+            batch_requests,
+            correlation_id,
+            stop_on_error=request.stop_on_error
+        )
+    
+    # Get statistics
+    stats = batch_executor.get_statistics(results)
+    
+    return BatchExecutionResponse(
+        results=[
+            BatchToolResult(
+                request_id=r.request_id,
+                tool_name=r.tool_name,
+                success=r.success,
+                data=r.data,
+                error=r.error,
+                execution_time_ms=r.execution_time_ms
+            )
+            for r in results
+        ],
+        statistics=stats,
+        correlation_id=correlation_id
+    )
+
+
+class ResponseShapeRequest(BaseModel):
+    """Request to shape API response"""
+    data: Dict[str, Any] = Field(..., description="Original response data")
+    include_fields: Optional[List[str]] = Field(None, description="Include only these fields")
+    exclude_fields: Optional[List[str]] = Field(None, description="Exclude these fields")
+    max_array_size: Optional[int] = Field(None, description="Limit array sizes", ge=1, le=1000)
+    compact: bool = Field(default=True, description="Remove nulls and empty objects")
+
+
+@router.post("/mcp/shape-response")
+async def shape_response(request: ResponseShapeRequest):
+    """
+    Shape API response for token optimization
+    
+    Features:
+    - Field selection (whitelist/blacklist)
+    - Array size limiting
+    - Null/empty value removal
+    - Token count estimation
+    """
+    config = ResponseConfig(
+        include_fields=request.include_fields,
+        exclude_fields=request.exclude_fields,
+        max_array_size=request.max_array_size,
+        compact=request.compact
+    )
+    
+    # Shape the response
+    shaped_data = response_shaper.shape(request.data, config)
+    
+    # Estimate token savings
+    original_tokens = response_shaper.estimate_token_count(request.data)
+    shaped_tokens = response_shaper.estimate_token_count(shaped_data)
+    
+    return {
+        "shaped_data": shaped_data,
+        "original_token_estimate": original_tokens,
+        "shaped_token_estimate": shaped_tokens,
+        "token_savings": original_tokens - shaped_tokens,
+        "savings_percentage": round((1 - shaped_tokens / original_tokens) * 100, 1) if original_tokens > 0 else 0
+    }
+

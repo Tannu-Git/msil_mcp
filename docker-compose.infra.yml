@@ -1,0 +1,31 @@
+# Infrastructure services for MSIL MCP Server
+# Run with: docker-compose -f docker-compose.infra.yml up -d
+
+version: '3.8'
+
+services:
+  # Open Policy Agent for authorization
+  opa:
+    image: openpolicyagent/opa:latest-rootless
+    container_name: msil-mcp-opa
+    ports:
+      - "8181:8181"
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--log-level=debug"
+      - "/policies"
+    volumes:
+      - ./mcp-server/app/core/policy/rego:/policies:ro
+    networks:
+      - mcp-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8181/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+networks:
+  mcp-network:
+    driver: bridge

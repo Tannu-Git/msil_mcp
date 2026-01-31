@@ -14,6 +14,7 @@ from app.db.database import init_db, close_db, check_db_health, get_redis_client
 from app.services.monitoring_service import monitoring_service
 from app.core.auth.jwt_handler import JWTHandler
 from app.core.auth import oauth2_provider as oauth2_module
+from app.core.cache.service import cache_service
 
 # Configure logging
 logging.basicConfig(
@@ -31,6 +32,15 @@ async def lifespan(app: FastAPI):
     logger.info(f"API Gateway Mode: {settings.API_GATEWAY_MODE}")
     await init_db()
     logger.info("Database initialized")
+    
+    # Initialize Redis Cache
+    if settings.REDIS_ENABLED:
+        try:
+            await cache_service.connect()
+            logger.info("Redis cache initialized")
+        except Exception as e:
+            logger.error(f"Redis initialization failed: {e}")
+            logger.warning("Continuing without Redis cache")
     
     # Initialize OAuth2 Provider
     if settings.OAUTH2_ENABLED:
@@ -53,6 +63,10 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down...")
     await close_db()
     logger.info("Database connections closed")
+    
+    if settings.REDIS_ENABLED:
+        await cache_service.close()
+        logger.info("Redis connection closed")
 
 
 # Create FastAPI application

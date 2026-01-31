@@ -1,11 +1,14 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Wrench, Settings, Car, Upload } from 'lucide-react'
+import { LayoutDashboard, Wrench, Settings, Car, Upload, Shield, FileText } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/' },
   { icon: Wrench, label: 'Tools', path: '/tools' },
   { icon: Upload, label: 'Import OpenAPI', path: '/import' },
+  { icon: Shield, label: 'Policies', path: '/policies' },
+  { icon: FileText, label: 'Audit Logs', path: '/audit-logs' },
+  { icon: Settings, label: 'Settings', path: '/settings' },
 ]
 
 export function Sidebar() {

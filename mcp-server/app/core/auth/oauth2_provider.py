@@ -177,7 +177,13 @@ oauth2_provider: Optional[OAuth2Provider] = None
 def get_oauth2_provider() -> OAuth2Provider:
     """Get global OAuth2 provider instance."""
     if oauth2_provider is None:
-        raise RuntimeError("OAuth2Provider not initialized")
+        # If not initialized, log error and raise HTTP exception
+        logger.error("OAuth2Provider not initialized - check server startup")
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=500,
+            detail="Authentication service not initialized"
+        )
     return oauth2_provider
 
 
