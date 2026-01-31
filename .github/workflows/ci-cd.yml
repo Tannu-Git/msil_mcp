@@ -1,0 +1,256 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  PYTHON_VERSION: '3.13'
+  NODE_VERSION: '20'
+
+jobs:
+  # Test MCP Server
+  test-mcp-server:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: msil_user
+          POSTGRES_PASSWORD: msil_password
+          POSTGRES_DB: msil_mcp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        working-directory: ./mcp-server
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run linting
+        working-directory: ./mcp-server
+        run: |
+          pip install flake8 black
+          flake8 app tests --max-line-length=100 --exclude=__pycache__
+          black --check app tests
+      
+      - name: Run tests
+        working-directory: ./mcp-server
+        env:
+          DATABASE_URL: postgresql+asyncpg://msil_user:msil_password@localhost:5432/msil_mcp
+          REDIS_URL: redis://localhost:6379/0
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          pytest tests/ -v --cov=app --cov-report=xml --cov-report=html
+      
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./mcp-server/coverage.xml
+          flags: mcp-server
+  
+  # Test Chat UI
+  test-chat-ui:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: chat-ui/package-lock.json
+      
+      - name: Install dependencies
+        working-directory: ./chat-ui
+        run: npm ci
+      
+      - name: Run linting
+        working-directory: ./chat-ui
+        run: npm run lint
+      
+      - name: Run tests
+        working-directory: ./chat-ui
+        run: npm test -- --coverage
+      
+      - name: Build
+        working-directory: ./chat-ui
+        run: npm run build
+  
+  # Test Admin UI
+  test-admin-ui:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: admin-ui/package-lock.json
+      
+      - name: Install dependencies
+        working-directory: ./admin-ui
+        run: npm ci
+      
+      - name: Run linting
+        working-directory: ./admin-ui
+        run: npm run lint
+      
+      - name: Run tests
+        working-directory: ./admin-ui
+        run: npm test -- --coverage
+      
+      - name: Build
+        working-directory: ./admin-ui
+        run: npm run build
+  
+  # Build and push Docker images
+  build-docker:
+    needs: [test-mcp-server, test-chat-ui, test-admin-ui]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    
+    strategy:
+      matrix:
+        service: [mcp-server, chat-ui, admin-ui]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKER_USERNAME }}/msil-${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=semver,pattern={{version}}
+      
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+  
+  # Deploy to development
+  deploy-dev:
+    needs: build-docker
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    environment: development
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster msil-mcp-dev-cluster \
+            --service msil-mcp-dev-service \
+            --force-new-deployment
+      
+      - name: Wait for deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster msil-mcp-dev-cluster \
+            --services msil-mcp-dev-service
+  
+  # Deploy to production
+  deploy-prod:
+    needs: build-docker
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster msil-mcp-prod-cluster \
+            --service msil-mcp-prod-service \
+            --force-new-deployment
+      
+      - name: Wait for deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster msil-mcp-prod-cluster \
+            --services msil-mcp-prod-service
+      
+      - name: Run smoke tests
+        run: |
+          # Wait for deployment to be healthy
+          sleep 30
+          
+          # Test health endpoint
+          HEALTH_URL="https://api.msil-mcp.com/health"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" $HEALTH_URL)
+          
+          if [ $STATUS -ne 200 ]; then
+            echo "Health check failed with status $STATUS"
+            exit 1
+          fi
+          
+          echo "Deployment successful!"

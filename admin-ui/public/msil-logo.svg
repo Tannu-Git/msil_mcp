@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60">
+  <rect width="200" height="60" fill="#003D79"/>
+  <text x="100" y="35" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="white" text-anchor="middle">MARUTI SUZUKI</text>
+  <text x="100" y="52" font-family="Arial, sans-serif" font-size="10" fill="#C0C0C0" text-anchor="middle">MCP Admin</text>
+</svg>

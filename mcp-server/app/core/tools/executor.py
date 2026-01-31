@@ -1,0 +1,152 @@
+"""
+Tool Executor - Executes tools against Mock API or MSIL APIM
+"""
+import logging
+import time
+import json
+from typing import Any, Dict, Optional
+import httpx
+
+from app.config import settings
+from app.core.tools.registry import tool_registry
+from app.core.metrics.collector import metrics_collector
+
+logger = logging.getLogger(__name__)
+
+
+class ToolExecutor:
+    """
+    Tool Executor - Executes tools against configured API gateway
+    Supports: Mock API (local) and MSIL APIM (production)
+    """
+    
+    def __init__(self):
+        self._http_client: Optional[httpx.AsyncClient] = None
+    
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create HTTP client"""
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=30.0)
+        return self._http_client
+    
+    def _get_base_url(self) -> str:
+        """Get base URL based on API gateway mode"""
+        if settings.API_GATEWAY_MODE == "msil_apim":
+            return settings.MSIL_APIM_BASE_URL
+        return settings.MOCK_API_BASE_URL
+    
+    def _get_headers(self, tool_auth_type: str) -> Dict[str, str]:
+        """Get headers based on auth type and API gateway mode"""
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        
+        if settings.API_GATEWAY_MODE == "msil_apim":
+            if settings.MSIL_APIM_SUBSCRIPTION_KEY:
+                headers["Ocp-Apim-Subscription-Key"] = settings.MSIL_APIM_SUBSCRIPTION_KEY
+            # Add OAuth token if available (future enhancement)
+        else:
+            # Mock API - simple API key
+            headers["X-API-Key"] = settings.API_KEY
+        
+        return headers
+    
+    async def execute(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        correlation_id: str
+    ) -> Dict[str, Any]:
+        """
+        Execute a tool with given arguments
+        
+        Args:
+            tool_name: Name of the tool to execute
+            arguments: Tool arguments
+            correlation_id: Request correlation ID
+            
+        Returns:
+            Tool execution result
+        """
+        # Track execution with metrics collector
+        async with metrics_collector.track_execution(tool_name, arguments) as execution_id:
+            start_time = time.time()
+            
+            try:
+                # Get tool definition
+                tool = await tool_registry.get_tool(tool_name)
+                if not tool:
+                    raise ValueError(f"Tool not found: {tool_name}")
+                
+                # Build URL
+                base_url = self._get_base_url()
+                endpoint = tool.api_endpoint
+                
+                # Handle path parameters
+                for key, value in arguments.items():
+                    placeholder = f"{{{key}}}"
+                    if placeholder in endpoint:
+                        endpoint = endpoint.replace(placeholder, str(value))
+                
+                url = f"{base_url}{endpoint}"
+                
+                # Get headers
+                headers = self._get_headers(tool.auth_type)
+                headers["X-Correlation-ID"] = correlation_id
+                headers["X-Execution-ID"] = execution_id
+                
+                # Get HTTP client
+                client = await self._get_client()
+                
+                logger.info(f"[{correlation_id}] Executing {tool_name}: {tool.http_method} {url}")
+                
+                # Execute request
+                if tool.http_method.upper() == "GET":
+                    response = await client.get(url, headers=headers, params=arguments)
+                elif tool.http_method.upper() == "POST":
+                    response = await client.post(url, headers=headers, json=arguments)
+                elif tool.http_method.upper() == "PUT":
+                    response = await client.put(url, headers=headers, json=arguments)
+                elif tool.http_method.upper() == "DELETE":
+                    response = await client.delete(url, headers=headers)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {tool.http_method}")
+                
+                execution_time = int((time.time() - start_time) * 1000)
+                
+                # Process response
+                if response.status_code >= 400:
+                    logger.error(f"[{correlation_id}] Tool execution failed: {response.status_code}")
+                    raise Exception(f"API returned {response.status_code}: {response.text}")
+                
+                try:
+                    result = response.json()
+                except json.JSONDecodeError:
+                    result = {"raw_response": response.text}
+                
+                logger.info(f"[{correlation_id}] Tool {tool_name} executed successfully in {execution_time}ms")
+                
+                return {
+                    "success": True,
+                    "data": result,
+                    "execution_time_ms": execution_time
+                }
+                
+            except httpx.TimeoutException as e:
+                logger.error(f"[{correlation_id}] Tool execution timeout: {tool_name}")
+                raise Exception("Request timeout")
+                
+            except Exception as e:
+                logger.error(f"[{correlation_id}] Tool execution error: {str(e)}")
+                raise
+    
+    async def close(self):
+        """Close HTTP client"""
+        if self._http_client:
+            await self._http_client.aclose()
+            self._http_client = None
+
+
+# Singleton instance
+tool_executor = ToolExecutor()

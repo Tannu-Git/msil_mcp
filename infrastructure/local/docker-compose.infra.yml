@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: msil-mcp-postgres
+    environment:
+      POSTGRES_USER: msil_mcp
+      POSTGRES_PASSWORD: msil_mcp_dev_2026
+      POSTGRES_DB: msil_mcp_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U msil_mcp -d msil_mcp_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - msil-mcp-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: msil-mcp-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - msil-mcp-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  msil-mcp-network:
+    driver: bridge

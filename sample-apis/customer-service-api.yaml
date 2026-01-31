@@ -1,0 +1,515 @@
+openapi: 3.0.3
+info:
+  title: MSIL Customer Service API
+  description: |
+    REST API for managing customer information and service bookings for Maruti Suzuki dealerships.
+    This API enables operations like customer registration, booking creation, status tracking, and service availability checks.
+  version: 1.0.0
+  contact:
+    name: MSIL API Support
+    email: api-support@marutisuzuki.com
+
+servers:
+  - url: https://api.marutisuzuki.com/v1
+    description: Production server
+  - url: https://api-staging.marutisuzuki.com/v1
+    description: Staging server
+
+tags:
+  - name: customers
+    description: Customer management operations
+  - name: bookings
+    description: Service booking operations
+  - name: services
+    description: Service information and availability
+
+paths:
+  /customers:
+    post:
+      summary: Create new customer
+      description: Register a new customer in the system with their contact and vehicle details
+      operationId: createCustomer
+      tags:
+        - customers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerCreate'
+      responses:
+        '201':
+          description: Customer created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        '400':
+          description: Invalid input
+        '409':
+          description: Customer already exists
+
+    get:
+      summary: Search customers
+      description: Search for customers by name, phone, or email
+      operationId: searchCustomers
+      tags:
+        - customers
+      parameters:
+        - name: query
+          in: query
+          description: Search query (name, phone, or email)
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of results
+          required: false
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        '200':
+          description: List of matching customers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  customers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Customer'
+                  total:
+                    type: integer
+
+  /customers/{customerId}:
+    get:
+      summary: Get customer details
+      description: Retrieve detailed information about a specific customer
+      operationId: getCustomer
+      tags:
+        - customers
+      parameters:
+        - name: customerId
+          in: path
+          required: true
+          description: Customer ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Customer details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        '404':
+          description: Customer not found
+
+    put:
+      summary: Update customer
+      description: Update customer information
+      operationId: updateCustomer
+      tags:
+        - customers
+      parameters:
+        - name: customerId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerUpdate'
+      responses:
+        '200':
+          description: Customer updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        '404':
+          description: Customer not found
+
+  /bookings:
+    post:
+      summary: Create service booking
+      description: Create a new service booking for a customer's vehicle
+      operationId: createBooking
+      tags:
+        - bookings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCreate'
+      responses:
+        '201':
+          description: Booking created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '400':
+          description: Invalid input
+
+    get:
+      summary: List bookings
+      description: Get list of bookings with optional filters
+      operationId: listBookings
+      tags:
+        - bookings
+      parameters:
+        - name: customerId
+          in: query
+          description: Filter by customer ID
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Filter by booking status
+          required: false
+          schema:
+            type: string
+            enum: [pending, confirmed, in_progress, completed, cancelled]
+        - name: fromDate
+          in: query
+          description: Filter bookings from this date (YYYY-MM-DD)
+          required: false
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: List of bookings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bookings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Booking'
+                  total:
+                    type: integer
+
+  /bookings/{bookingId}:
+    get:
+      summary: Get booking details
+      description: Retrieve detailed information about a specific booking
+      operationId: getBooking
+      tags:
+        - bookings
+      parameters:
+        - name: bookingId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Booking details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '404':
+          description: Booking not found
+
+    put:
+      summary: Update booking
+      description: Update booking details or status
+      operationId: updateBooking
+      tags:
+        - bookings
+      parameters:
+        - name: bookingId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingUpdate'
+      responses:
+        '200':
+          description: Booking updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+
+    delete:
+      summary: Cancel booking
+      description: Cancel a service booking
+      operationId: cancelBooking
+      tags:
+        - bookings
+      parameters:
+        - name: bookingId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Booking cancelled successfully
+        '404':
+          description: Booking not found
+
+  /services/availability:
+    get:
+      summary: Check service availability
+      description: Check available time slots for a specific service at a dealership
+      operationId: checkAvailability
+      tags:
+        - services
+      parameters:
+        - name: dealershipId
+          in: query
+          required: true
+          description: Dealership ID
+          schema:
+            type: string
+        - name: serviceType
+          in: query
+          required: true
+          description: Type of service
+          schema:
+            type: string
+            enum: [general_service, periodic_maintenance, repair, inspection]
+        - name: date
+          in: query
+          required: true
+          description: Date to check (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Available time slots
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  date:
+                    type: string
+                    format: date
+                  slots:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        time:
+                          type: string
+                          example: "09:00"
+                        available:
+                          type: boolean
+                        capacity:
+                          type: integer
+
+  /services/types:
+    get:
+      summary: Get service types
+      description: List all available service types with pricing
+      operationId: getServiceTypes
+      tags:
+        - services
+      responses:
+        '200':
+          description: List of service types
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  services:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        description:
+                          type: string
+                        duration_minutes:
+                          type: integer
+                        base_price:
+                          type: number
+                        category:
+                          type: string
+
+components:
+  schemas:
+    CustomerCreate:
+      type: object
+      required:
+        - name
+        - phone
+        - email
+      properties:
+        name:
+          type: string
+          example: "Rahul Sharma"
+        phone:
+          type: string
+          pattern: '^\+?[1-9]\d{1,14}$'
+          example: "+919876543210"
+        email:
+          type: string
+          format: email
+          example: "rahul.sharma@example.com"
+        address:
+          type: string
+          example: "123 MG Road, New Delhi"
+        vehicleNumber:
+          type: string
+          example: "DL01AB1234"
+        vehicleModel:
+          type: string
+          example: "Swift VXi"
+
+    CustomerUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+        address:
+          type: string
+        vehicleNumber:
+          type: string
+        vehicleModel:
+          type: string
+
+    Customer:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "cust_abc123"
+        name:
+          type: string
+        phone:
+          type: string
+        email:
+          type: string
+        address:
+          type: string
+        vehicleNumber:
+          type: string
+        vehicleModel:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    BookingCreate:
+      type: object
+      required:
+        - customerId
+        - dealershipId
+        - serviceType
+        - preferredDate
+        - preferredTime
+      properties:
+        customerId:
+          type: string
+          example: "cust_abc123"
+        dealershipId:
+          type: string
+          example: "dealer_xyz789"
+        serviceType:
+          type: string
+          enum: [general_service, periodic_maintenance, repair, inspection]
+        preferredDate:
+          type: string
+          format: date
+          example: "2024-01-20"
+        preferredTime:
+          type: string
+          example: "10:00"
+        notes:
+          type: string
+          example: "Engine making unusual noise"
+
+    BookingUpdate:
+      type: object
+      properties:
+        preferredDate:
+          type: string
+          format: date
+        preferredTime:
+          type: string
+        status:
+          type: string
+          enum: [pending, confirmed, in_progress, completed, cancelled]
+        notes:
+          type: string
+
+    Booking:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "booking_def456"
+        customerId:
+          type: string
+        dealershipId:
+          type: string
+        serviceType:
+          type: string
+        preferredDate:
+          type: string
+          format: date
+        preferredTime:
+          type: string
+        actualDate:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [pending, confirmed, in_progress, completed, cancelled]
+        notes:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - ApiKeyAuth: []
+  - BearerAuth: []
