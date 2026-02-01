@@ -1,0 +1,30 @@
+# MSIL MCP Server - Minimal Dev Terraform Variables
+# ==================================================
+# Copy to terraform.tfvars and customize
+
+# AWS Region
+aws_region = "ap-south-1"
+
+# EC2 Instance Type
+# Options:
+#   t3.micro  - 1 vCPU, 1GB RAM  - ~$7.50/month (may be slow)
+#   t3.small  - 2 vCPU, 2GB RAM  - ~$15/month (recommended)
+#   t3.medium - 2 vCPU, 4GB RAM  - ~$30/month (comfortable)
+instance_type = "t3.small"
+
+# SSH Key Pair (create in AWS Console first, or leave empty to use SSM)
+key_pair_name = ""
+
+# Restrict SSH access to your IP (recommended)
+# Find your IP: curl ifconfig.me
+allowed_ssh_cidrs = ["0.0.0.0/0"]  # Change to ["YOUR.IP.HERE/32"]
+
+# Use Elastic IP? (adds ~$3.65/month if instance is stopped)
+use_elastic_ip = false
+
+# Use RDS PostgreSQL? (adds ~$15/month)
+# If false, uses SQLite (good for basic dev/testing)
+use_rds = false
+
+# Database password (only needed if use_rds = true)
+db_password = ""

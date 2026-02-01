@@ -2,7 +2,8 @@
 
 import logging
 from typing import Dict
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 
 from app.core.auth.oauth2_provider import OAuth2Provider, get_oauth2_provider, get_current_user
@@ -12,6 +13,49 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+
+# Explicit OPTIONS handlers for CORS preflight
+@router.options("/login")
+async def options_login():
+    """Handle CORS preflight for login endpoint."""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
+
+
+@router.options("/refresh")
+async def options_refresh():
+    """Handle CORS preflight for refresh endpoint."""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
+
+
+@router.options("/me")
+async def options_me():
+    """Handle CORS preflight for me endpoint."""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
 
 
 class LoginRequest(BaseModel):
@@ -42,6 +86,47 @@ async def login(
     Raises:
         HTTPException: If authentication fails
     """
+    logger.info(f"Login attempt for: {request.email} (DEMO_MODE={settings.DEMO_MODE})")
+    
+    # DEMO MODE - Simple authentication for MVP demo
+    if settings.DEMO_MODE:
+        demo_users = {}
+        for user_creds in settings.DEMO_MODE_USERS.split(","):
+            if ":" in user_creds:
+                email, password = user_creds.strip().split(":", 1)
+                demo_users[email.lower()] = {
+                    "password": password,
+                    "user_id": f"demo-{email.split('@')[0]}",
+                    "name": email.split('@')[0].title(),
+                    "roles": ["admin"] if "admin" in email.lower() else ["user"]
+                }
+        
+        demo_user = demo_users.get(request.email.lower())
+        if demo_user and demo_user["password"] == request.password:
+            logger.info(f"DEMO_MODE: User authenticated: {request.email}")
+            token_data = {
+                "sub": demo_user["user_id"],
+                "email": request.email.lower(),
+                "name": demo_user["name"],
+                "roles": demo_user["roles"]
+            }
+            access_token = provider.jwt_handler.create_access_token(token_data)
+            refresh_token = provider.jwt_handler.create_refresh_token({"sub": demo_user["user_id"]})
+            return TokenResponse(
+                access_token=access_token,
+                token_type="bearer",
+                expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+                refresh_token=refresh_token
+            )
+        else:
+            logger.warning(f"DEMO_MODE: Invalid credentials for: {request.email}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid demo credentials. Use admin@marutisuzuki.com / admin123",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    
+    # Production mode - full authentication
     # Authenticate user
     user = await provider.authenticate_user(request.email, request.password)
     

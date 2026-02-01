@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
     
+    # Demo Mode - bypasses security for MVP demo
+    DEMO_MODE: bool = True
+    DEMO_MODE_USERS: str = "admin@msil.com:admin123,developer@msil.com:dev123,operator@msil.com:op123"
+    
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -55,7 +59,7 @@ class Settings(BaseSettings):
     
     # Security
     API_KEY: str = "msil-mcp-dev-key-2026"
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173,http://localhost:5174"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:5173,http://localhost:5174"
     
     # OAuth2/JWT Authentication
     OAUTH2_ENABLED: bool = True

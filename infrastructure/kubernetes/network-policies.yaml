@@ -1,0 +1,307 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcp-server-network-policy
+  namespace: mcp-production
+  labels:
+    app: mcp-server
+  annotations:
+    description: "Network policies for MCP Server following zero-trust principles"
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-server
+  
+  # Default deny all traffic
+  policyTypes:
+    - Ingress
+    - Egress
+  
+  # Ingress rules - who can connect to mcp-server
+  ingress:
+    # Rule 1: Allow traffic from API Gateway only
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+        - namespaceSelector:
+            matchLabels:
+              name: gateway
+      ports:
+        - protocol: TCP
+          port: 8000
+    
+    # Rule 2: Allow traffic from admin portal
+    - from:
+        - podSelector:
+            matchLabels:
+              app: admin-ui
+      ports:
+        - protocol: TCP
+          port: 8000
+    
+    # Rule 3: Allow health checks from ingress controller
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+  
+  # Egress rules - where mcp-server can connect
+  egress:
+    # Rule 1: Allow DNS queries
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    
+    # Rule 2: Allow PostgreSQL connections
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    
+    # Rule 3: Allow Redis connections
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    
+    # Rule 4: Allow HTTPS to external IdP (OIDC)
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 443
+      # Restrict to specific IdP endpoints if possible
+      # to:
+      #   - ipBlock:
+      #       cidr: <IdP_IP_RANGE>/32
+    
+    # Rule 5: Allow HTTPS to external APIs
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# Network Policy for PostgreSQL
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-network-policy
+  namespace: mcp-production
+  labels:
+    app: postgres
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  
+  policyTypes:
+    - Ingress
+    - Egress
+  
+  # Only allow connections from mcp-server
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mcp-server
+      ports:
+        - protocol: TCP
+          port: 5432
+  
+  # Allow DNS only
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+
+---
+# Network Policy for Redis
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-network-policy
+  namespace: mcp-production
+  labels:
+    app: redis
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  
+  policyTypes:
+    - Ingress
+    - Egress
+  
+  # Only allow connections from mcp-server
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: mcp-server
+      ports:
+        - protocol: TCP
+          port: 6379
+  
+  # Allow DNS only
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+
+---
+# Network Policy for Admin UI
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: admin-ui-network-policy
+  namespace: mcp-production
+  labels:
+    app: admin-ui
+spec:
+  podSelector:
+    matchLabels:
+      app: admin-ui
+  
+  policyTypes:
+    - Ingress
+    - Egress
+  
+  # Allow traffic from ingress controller
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+  
+  # Allow connections to mcp-server and DNS
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    
+    # MCP Server API
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mcp-server
+      ports:
+        - protocol: TCP
+          port: 8000
+
+---
+# Network Policy for Chat UI
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: chat-ui-network-policy
+  namespace: mcp-production
+  labels:
+    app: chat-ui
+spec:
+  podSelector:
+    matchLabels:
+      app: chat-ui
+  
+  policyTypes:
+    - Ingress
+    - Egress
+  
+  # Allow traffic from ingress controller
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+  
+  # Allow connections to mcp-server and DNS
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    
+    # MCP Server API
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mcp-server
+      ports:
+        - protocol: TCP
+          port: 8000
+
+---
+# Default Deny All Network Policy (Baseline)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: mcp-production
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress/egress rules = deny all

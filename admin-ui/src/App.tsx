@@ -16,8 +16,14 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      <div className="flex items-center justify-center h-screen bg-gradient-to-br from-slate-50 to-blue-50">
+        <div className="flex flex-col items-center gap-4">
+          <div className="relative">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-600 to-blue-800 animate-pulse shadow-lg shadow-blue-500/30" />
+            <div className="absolute inset-0 w-14 h-14 rounded-2xl border-2 border-blue-400 border-t-transparent animate-spin" />
+          </div>
+          <p className="text-sm text-gray-600 font-medium">Loading...</p>
+        </div>
       </div>
     )
   }
@@ -37,11 +43,11 @@ function AppRoutes() {
         path="/*"
         element={
           <ProtectedRoute>
-            <div className="flex h-screen bg-gray-100">
+            <div className="flex h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50">
               <Sidebar />
               <div className="flex-1 flex flex-col overflow-hidden">
                 <Header />
-                <main className="flex-1 overflow-y-auto p-6">
+                <main className="flex-1 overflow-y-auto p-6 lg:p-8">
                   <Routes>
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/tools" element={<Tools />} />

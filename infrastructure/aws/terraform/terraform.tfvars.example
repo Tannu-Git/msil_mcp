@@ -1,0 +1,55 @@
+# MSIL MCP Server - Terraform Variables Example
+# Copy this file to terraform.tfvars and fill in your values
+# ============================================================
+
+# AWS Configuration
+aws_region   = "ap-south-1"          # Mumbai region for MSIL
+environment  = "dev"                  # Options: dev, staging, prod
+project_name = "msil-mcp"
+
+# VPC Configuration
+vpc_cidr             = "10.0.0.0/16"
+public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnet_cidrs = ["10.0.11.0/24", "10.0.12.0/24"]
+
+# Database Configuration
+db_name              = "msil_mcp_db"
+db_username          = "msil_mcp"
+db_password          = "CHANGE_ME_TO_SECURE_PASSWORD"  # Change this!
+db_instance_class    = "db.t3.micro"                   # Use db.t3.small for production
+db_allocated_storage = 20                               # GB
+
+# Redis Configuration
+redis_node_type = "cache.t3.micro"   # Use cache.t3.small for production
+
+# Application Configuration
+api_gateway_mode = "mock"             # Options: mock, msil_apim
+
+# ACM Certificate (required for HTTPS)
+# Create a certificate in ACM and paste the ARN here
+acm_certificate_arn = ""              # e.g., arn:aws:acm:ap-south-1:123456789:certificate/xxx
+
+# ECS Configuration
+mcp_server_cpu           = 1024       # 1 vCPU
+mcp_server_memory        = 2048       # 2 GB
+mcp_server_desired_count = 1          # Use 2+ for production
+
+# =============================================================
+# Required AWS Details to fill before deployment:
+# =============================================================
+# 
+# 1. AWS Account ID: _______________
+# 2. AWS Access Key: _______________  
+# 3. AWS Secret Key: _______________
+# 4. ACM Certificate ARN (for HTTPS): _______________
+# 5. Domain Name (optional): _______________
+# 
+# =============================================================
+# Secrets to add to AWS Secrets Manager after deployment:
+# =============================================================
+#
+# 1. OpenAI API Key
+# 2. MSIL APIM Subscription Key (if using msil_apim mode)
+# 3. JWT Secret Key
+#
+# =============================================================

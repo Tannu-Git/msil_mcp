@@ -4,11 +4,55 @@ MSIL MCP Server - Main Application
 import logging
 import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response as StarletteResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import settings
+
+
+# =============================================================================
+# ASGI-Level CORS Handler - Runs BEFORE FastAPI processes anything
+# =============================================================================
+class CORSASGIMiddleware:
+    """ASGI middleware to handle CORS preflight at the lowest level."""
+    
+    def __init__(self, app: ASGIApp):
+        self.app = app
+    
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] == "http" and scope["method"] == "OPTIONS":
+            # Get origin from headers
+            headers = dict(scope.get("headers", []))
+            origin = headers.get(b"origin", b"*").decode("utf-8")
+            
+            # Build CORS response headers
+            response_headers = [
+                (b"access-control-allow-origin", origin.encode() if origin else b"*"),
+                (b"access-control-allow-methods", b"GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD"),
+                (b"access-control-allow-headers", b"Accept, Accept-Language, Content-Language, Content-Type, Authorization, X-API-Key, X-Requested-With, X-Correlation-ID"),
+                (b"access-control-allow-credentials", b"true"),
+                (b"access-control-max-age", b"86400"),
+                (b"content-length", b"0"),
+                (b"content-type", b"text/plain"),
+            ]
+            
+            # Send 200 OK response for OPTIONS
+            await send({
+                "type": "http.response.start",
+                "status": 200,
+                "headers": response_headers,
+            })
+            await send({
+                "type": "http.response.body",
+                "body": b"",
+            })
+            return
+        
+        # For non-OPTIONS requests, pass through to FastAPI
+        await self.app(scope, receive, send)
 from app.api import mcp, admin, chat, analytics, openapi_import, auth
 from app.db.database import init_db, close_db, check_db_health, get_redis_client
 from app.services.monitoring_service import monitoring_service
@@ -70,31 +114,26 @@ async def lifespan(app: FastAPI):
 
 
 # Create FastAPI application
-app = FastAPI(
+_fastapi_app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="MSIL Composite MCP Server - AI-Powered Service Platform",
     lifespan=lifespan,
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    openapi_url="/api/openapi.json"
 )
-
-# CORS Configuration
-cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",")]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 # Monitoring Middleware
 class MonitoringMiddleware(BaseHTTPMiddleware):
     """Middleware for request monitoring and metrics"""
     
     async def dispatch(self, request: Request, call_next):
+        # Skip monitoring for OPTIONS requests (CORS preflight)
+        if request.method == "OPTIONS":
+            response = await call_next(request)
+            return response
+        
         # Generate correlation ID
         correlation_id = request.headers.get("X-Correlation-ID", f"req-{time.time()}")
         request.state.correlation_id = correlation_id
@@ -128,29 +167,42 @@ class MonitoringMiddleware(BaseHTTPMiddleware):
         return response
 
 
-app.add_middleware(MonitoringMiddleware)
+_fastapi_app.add_middleware(MonitoringMiddleware)
+
+# CORS Configuration
+cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",")]
+_fastapi_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
+)
 
 # Include routers
-app.include_router(auth.router, prefix="/api", tags=["Authentication"])
-app.include_router(mcp.router, tags=["MCP Protocol"])
-app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
-app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
-app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics"])
-app.include_router(openapi_import.router, prefix="/api/admin/openapi", tags=["OpenAPI Import"])
+_fastapi_app.include_router(auth.router, prefix="/api", tags=["Authentication"])
+_fastapi_app.include_router(mcp.router, tags=["MCP Protocol"])
+_fastapi_app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
+_fastapi_app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
+_fastapi_app.include_router(analytics.router, prefix="/api/analytics", tags=["Analytics"])
+_fastapi_app.include_router(openapi_import.router, prefix="/api/admin/openapi", tags=["OpenAPI Import"])
 
 
-@app.get("/", tags=["Health"])
+@_fastapi_app.get("/", tags=["Health"])
 async def root():
     """Root endpoint - health check"""
     return {
         "service": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "status": "healthy",
-        "mode": settings.API_GATEWAY_MODE
+        "mode": settings.API_GATEWAY_MODE,
+        "demo_mode": settings.DEMO_MODE
     }
 
 
-@app.get("/health", tags=["Health"])
+@_fastapi_app.get("/health", tags=["Health"])
 async def health_check():
     """Detailed health check"""
     health_status = await monitoring_service.get_health_status()
@@ -160,13 +212,14 @@ async def health_check():
         "service": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "api_gateway_mode": settings.API_GATEWAY_MODE,
+        "demo_mode": settings.DEMO_MODE,
         "database": "connected",
         "redis": "connected",
         **health_status
     }
 
 
-@app.get("/ready", tags=["Health"])
+@_fastapi_app.get("/ready", tags=["Health"])
 async def readiness_check():
     """Readiness check for Kubernetes/ECS"""
     db_healthy = await check_db_health()
@@ -188,10 +241,17 @@ async def readiness_check():
         raise HTTPException(status_code=503, detail=readiness)
 
 
-@app.get("/metrics", tags=["Monitoring"])
+@_fastapi_app.get("/metrics", tags=["Monitoring"])
 async def metrics():
     """Prometheus metrics endpoint"""
     return monitoring_service.get_metrics()
+
+
+# =============================================================================
+# WRAP APP WITH ASGI CORS HANDLER - This runs BEFORE FastAPI
+# =============================================================================
+app = CORSASGIMiddleware(_fastapi_app)
+logger.info(f"CORS ASGI Middleware enabled - DEMO_MODE={settings.DEMO_MODE}")
 
 
 if __name__ == "__main__":

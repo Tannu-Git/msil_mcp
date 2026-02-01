@@ -1,0 +1,144 @@
+version: '3.8'
+
+services:
+  mcp-server:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile.hardened
+    container_name: mcp-server-hardened
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:unconfined  # Use custom seccomp profile in production
+    
+    # Read-only root filesystem
+    read_only: true
+    
+    # Temporary filesystem for application writes
+    tmpfs:
+      - /tmp/app:rw,noexec,nosuid,size=100m
+      - /var/log/app:rw,noexec,nosuid,size=50m
+    
+    # Drop all capabilities, add only required ones
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE  # Only if binding to port <1024
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+          pids: 100
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    # User namespace remapping
+    user: "1000:1000"
+    
+    # Prevent privilege escalation
+    privileged: false
+    
+    # Network configuration
+    networks:
+      - mcp-network
+    
+    # Environment variables (use .env file for secrets)
+    environment:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=info
+      - DATABASE_URL=postgresql://user:pass@postgres:5432/mcp
+      - REDIS_URL=redis://redis:6379/0
+    
+    # Health check
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import httpx; httpx.get(\"http://localhost:8000/health\", timeout=5.0).raise_for_status()' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    ports:
+      - "8000:8000"
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16.1-alpine
+    container_name: mcp-postgres
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    environment:
+      - POSTGRES_USER=mcp_user
+      - POSTGRES_PASSWORD=changeme
+      - POSTGRES_DB=mcp
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - mcp-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mcp_user -d mcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: mcp-redis
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - mcp-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  mcp-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: mcp-bridge
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+    ipam:
+      config:
+        - subnet: 172.25.0.0/24
+
+volumes:
+  postgres-data:
+    driver: local
