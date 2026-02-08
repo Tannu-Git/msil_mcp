@@ -21,6 +21,7 @@ class Tool:
     api_endpoint: str
     http_method: str
     input_schema: Dict[str, Any]
+    bundle_name: Optional[str] = None
     output_schema: Optional[Dict[str, Any]] = None
     headers: Dict[str, str] = field(default_factory=dict)
     auth_type: str = "none"
@@ -32,6 +33,7 @@ class Tool:
     # Risk & Privilege Management (P0-3)
     risk_level: str = "read"  # read, write, privileged
     requires_elevation: bool = False
+    requires_confirmation: bool = False
     requires_approval: bool = False
     max_concurrent_executions: int = 10
     rate_limit_tier: str = "standard"  # permissive, standard, strict
@@ -252,6 +254,35 @@ class ToolRegistry:
         """Register a new tool"""
         self._tools[tool.name] = tool
         logger.info(f"Registered tool: {tool.name}")
+
+    async def update_tool(self, name: str, updates: Dict[str, Any]) -> Optional[Tool]:
+        """Update an existing tool in memory"""
+        await self._ensure_loaded()
+        tool = self._tools.get(name)
+        if not tool:
+            return None
+
+        for key, value in updates.items():
+            if hasattr(tool, key) and value is not None:
+                setattr(tool, key, value)
+
+        tool.updated_at = datetime.utcnow()
+        self._tools[name] = tool
+        logger.info(f"Updated tool: {name}")
+        return tool
+
+    async def delete_tool(self, name: str) -> bool:
+        """Soft-delete a tool by marking it inactive"""
+        await self._ensure_loaded()
+        tool = self._tools.get(name)
+        if not tool:
+            return False
+
+        tool.is_active = False
+        tool.updated_at = datetime.utcnow()
+        self._tools[name] = tool
+        logger.info(f"Deactivated tool: {name}")
+        return True
     
     async def reload(self) -> None:
         """Force reload tools from database"""

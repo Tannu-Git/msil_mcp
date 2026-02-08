@@ -1,7 +1,7 @@
 # API Reference
 
-**Document Version**: 2.1  
-**Last Updated**: February 1, 2026  
+**Document Version**: 2.2  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
@@ -114,7 +114,9 @@ After receiving the response, send the `initialized` notification:
 
 ### 4.1 List Tools
 
-Get available tools filtered by user's permissions.
+Get available tools filtered by **Exposure Governance (Layer B)** and **Authorization (Layer A)**.
+
+**Exposure Governance** filters tool visibility based on role permissions (`expose:all`, `expose:bundle:*`, `expose:tool:*`) before authorization checks are applied.
 
 ```http
 GET /api/mcp/tools
@@ -435,6 +437,67 @@ PUT /api/admin/tools/{tool_name}
 ```http
 DELETE /api/admin/tools/{tool_name}
 ```
+
+### 5.1a Exposure Governance (Phase 3)
+
+Manage tool visibility by role. These endpoints control **Layer B (Exposure)** of the two-layer security model.
+
+#### Get Role Permissions
+
+```http
+GET /api/admin/exposure/roles/{role_name}
+```
+
+**Response:**
+
+```json
+{
+  "role": "operator",
+  "permissions": ["expose:bundle:customer-service", "expose:bundle:data-analysis"]
+}
+```
+
+#### Add Permission to Role
+
+```http
+POST /api/admin/exposure/roles/{role_name}/permissions
+```
+
+**Request Body:**
+
+```json
+{
+  "permission": "expose:bundle:customer-service"
+}
+```
+
+#### Remove Permission from Role
+
+```http
+DELETE /api/admin/exposure/roles/{role_name}/permissions
+```
+
+**Request Body:**
+
+```json
+{
+  "permission": "expose:bundle:customer-service"
+}
+```
+
+#### List Available Bundles
+
+```http
+GET /api/admin/exposure/bundles
+```
+
+#### Preview Role Exposure
+
+```http
+GET /api/admin/exposure/preview/{role_name}
+```
+
+---
 
 ### 5.2 Import OpenAPI
 

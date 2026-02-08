@@ -1,7 +1,7 @@
 # Product Selection Approach
 
-**Document Version**: 2.0  
-**Last Updated**: January 31, 2026  
+**Document Version**: 2.1  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
@@ -56,6 +56,7 @@ This document outlines the approach used for selecting the Model Context Protoco
 | **Tool Abstraction** | Clean separation of tool definition from implementation |
 | **Schema Support** | JSON Schema for input/output validation |
 | **Enterprise Ready** | Supports authentication, authorization, audit |
+| **Governed Visibility** | Role-based tool exposure and visibility controls |
 | **Extensibility** | Easy to add new tools without code changes |
 | **Community** | Growing ecosystem and community support |
 

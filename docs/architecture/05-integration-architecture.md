@@ -1,20 +1,21 @@
 # Integration Architecture
 
-**Document Version**: 2.1  
-**Last Updated**: February 1, 2026  
+**Document Version**: 2.2  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
 
 ## 1. Overview
 
-This document describes how the MCP Server integrates with MSIL's API Manager, backend services, authentication providers, and observability infrastructure.
+This document describes how the MCP Server integrates with MSIL's API Manager, backend services, authentication providers, observability infrastructure, and Exposure Governance services.
 
 **Important Notes**:
 - All external integrations (IdP, APIM) are **configurable** and not vendor-locked
 - "MSIL IdP" refers to MSIL's OIDC-compliant identity provider (specific implementation TBD by MSIL)
 - "MSIL APIM" refers to MSIL's API Management platform (specific implementation TBD by MSIL)
 - The LLM **decides which tool to call**—the Host/Agent application (with MCP Client) communicates with MCP Server
+- Exposure Governance adds role-based tool visibility filtering in tools/list and tools/call flows
 
 ---
 

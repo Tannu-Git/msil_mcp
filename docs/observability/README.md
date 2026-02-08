@@ -1,7 +1,7 @@
 # Observability Guide
 
-**Document Version**: 2.1  
-**Last Updated**: February 1, 2026  
+**Document Version**: 2.2  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
@@ -251,6 +251,31 @@ POLICY_DECISIONS = Counter(
     'mcp_policy_decisions_total',
     'Policy decisions',
     ['action', 'result']
+)
+
+# Exposure Governance metrics (Phase 3)
+EXPOSURE_CACHE_HITS = Counter(
+  'mcp_exposure_cache_hits_total',
+  'Exposure cache hits',
+  ['role_key']
+)
+
+EXPOSURE_CACHE_MISSES = Counter(
+  'mcp_exposure_cache_misses_total',
+  'Exposure cache misses',
+  ['role_key']
+)
+
+EXPOSURE_FILTERED_TOOLS = Histogram(
+  'mcp_exposure_filtered_tools_count',
+  'Number of tools returned after exposure filtering',
+  buckets=[1, 5, 10, 25, 50, 100, 250]
+)
+
+EXPOSURE_PERMISSION_CHANGES = Counter(
+  'mcp_exposure_permission_changes_total',
+  'Exposure permission changes via admin API',
+  ['action', 'role']
 )
 
 # System metrics

@@ -1,7 +1,7 @@
 # DevSecOps Guide
 
-**Document Version**: 2.1  
-**Last Updated**: February 1, 2026  
+**Document Version**: 2.2  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
@@ -104,7 +104,7 @@ jobs:
       - name: Run unit tests
         run: |
           cd mcp-server
-          pytest tests/unit/ -v --cov=app --cov-report=xml
+          pytest tests/ -v --cov=app --cov-report=xml
           
       - name: Upload coverage
         uses: codecov/codecov-action@v4

@@ -316,6 +316,40 @@ class PolicyEngine:
         """
         return list(self.simple_rules.keys())
 
+    def create_role(self, role: str, permissions: Optional[List[str]] = None):
+        """Create a new role.
+        
+        Args:
+            role: Role name
+            permissions: Optional initial permissions
+        """
+        if role in self.simple_rules:
+            raise ValueError(f"Role '{role}' already exists")
+        self.simple_rules[role] = permissions or []
+        logger.info(f"Created role '{role}'")
+
+    def set_role_permissions(self, role: str, permissions: List[str]):
+        """Replace permissions for a role.
+        
+        Args:
+            role: Role name
+            permissions: Full list of permissions
+        """
+        if role not in self.simple_rules:
+            raise ValueError(f"Role '{role}' does not exist")
+        self.simple_rules[role] = permissions
+        logger.info(f"Updated permissions for role '{role}'")
+
+    def delete_role(self, role: str):
+        """Delete a role.
+        
+        Args:
+            role: Role name
+        """
+        if role in self.simple_rules:
+            del self.simple_rules[role]
+            logger.info(f"Deleted role '{role}'")
+
 
 # Global policy engine instance
 policy_engine = PolicyEngine()

@@ -1,7 +1,7 @@
 # Governance Templates
 
-**Document Version**: 2.0  
-**Last Updated**: January 31, 2026  
+**Document Version**: 2.1  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
@@ -47,6 +47,7 @@
 │ Service Impact:     □ None  □ Minor  □ Moderate  □ Significant          │
 │ User Impact:        □ None  □ Minor  □ Moderate  □ Significant          │
 │ Security Impact:    □ None  □ Minor  □ Moderate  □ Significant          │
+│ Exposure Impact:    □ None  □ Minor  □ Moderate  □ Significant          │
 │ Downtime Required:  □ Yes (Duration: _______)  □ No                     │
 │                                                                          │
 │ Risk Assessment:                                                         │

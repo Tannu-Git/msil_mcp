@@ -59,6 +59,8 @@ from app.services.monitoring_service import monitoring_service
 from app.core.auth.jwt_handler import JWTHandler
 from app.core.auth import oauth2_provider as oauth2_module
 from app.core.cache.service import cache_service
+from app.core.idempotency.store import IdempotencyStore
+from app.core.tools.executor import tool_executor
 
 # Configure logging
 logging.basicConfig(
@@ -85,6 +87,16 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Redis initialization failed: {e}")
             logger.warning("Continuing without Redis cache")
+
+    # Initialize Idempotency Store
+    if settings.IDEMPOTENCY_ENABLED and settings.REDIS_ENABLED:
+        redis_client = get_redis_client()
+        if redis_client:
+            tool_executor.idempotency_store = IdempotencyStore(
+                redis_client=redis_client,
+                ttl_seconds=settings.IDEMPOTENCY_TTL_SECONDS
+            )
+            logger.info("Idempotency store initialized")
     
     # Initialize OAuth2 Provider
     if settings.OAUTH2_ENABLED:

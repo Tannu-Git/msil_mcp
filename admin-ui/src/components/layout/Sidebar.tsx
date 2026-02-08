@@ -1,16 +1,97 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, Wrench, Settings, Upload, Shield, FileText, Calendar, Sparkles } from 'lucide-react'
+import { LayoutDashboard, Wrench, Settings, Upload, Shield, FileText, Calendar, Sparkles, Eye, Users, Code, TestTube, Lock, CheckCircle2, LogSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-const navItems = [
-  { icon: LayoutDashboard, label: 'Dashboard', path: '/' },
-  { icon: Wrench, label: 'Tools', path: '/tools' },
-  { icon: Upload, label: 'Import OpenAPI', path: '/import' },
-  { icon: Shield, label: 'Policies', path: '/policies' },
-  { icon: FileText, label: 'Audit Logs', path: '/audit-logs' },
-  { icon: Calendar, label: 'Service Booking', path: '/service-booking' },
-  { icon: Settings, label: 'Settings', path: '/settings' },
+interface NavSection {
+  title: string
+  color: string
+  items: NavItem[]
+}
+
+interface NavItem {
+  icon: React.ComponentType<{ className?: string }>
+  label: string
+  path: string
+  description?: string
+}
+
+// Main navigation items grouped by section
+const navSections: NavSection[] = [
+  {
+    title: 'CORE',
+    color: 'blue',
+    items: [
+      { icon: LayoutDashboard, label: 'Dashboard', path: '/' },
+    ]
+  },
+  {
+    title: 'TOOLS',
+    color: 'blue',
+    items: [
+      { icon: Wrench, label: 'Tools', path: '/tools' },
+      { icon: Upload, label: 'Import OpenAPI', path: '/import' },
+    ]
+  },
+  {
+    title: 'AUTHORIZATION & ACCESS CONTROL',
+    color: 'blue',
+    items: [
+      { icon: Shield, label: 'Policies', path: '/policies', description: 'RBAC roles & permissions' },
+      { icon: Users, label: 'Users', path: '/users', description: 'Assign roles to users' },
+      { icon: Code, label: 'OPA Policies', path: '/opa-policies', description: 'Advanced policy rules' },
+      { icon: TestTube, label: 'Test Authorization', path: '/test-authz', description: 'Validate before deploy' },
+    ]
+  },
+  {
+    title: 'TOOL EXPOSURE',
+    color: 'green',
+    items: [
+      { icon: Eye, label: 'Exposure Governance', path: '/exposure', description: 'Control tool visibility' },
+    ]
+  },
+  {
+    title: 'COMPLIANCE & MONITORING',
+    color: 'gray',
+    items: [
+      { icon: FileText, label: 'Audit Logs', path: '/audit-logs' },
+      { icon: Settings, label: 'Settings', path: '/settings' },
+    ]
+  },
+  {
+    title: 'WORKFLOWS',
+    color: 'purple',
+    items: [
+      { icon: Calendar, label: 'Service Booking', path: '/service-booking' },
+    ]
+  }
 ]
+
+// Helper to get section color classes
+const getSectionColors = (color: string) => {
+  const colors: Record<string, { header: string; icon: string; hover: string }> = {
+    blue: {
+      header: 'text-blue-300',
+      icon: 'text-blue-400 bg-blue-500/20 group-hover:bg-blue-500/30',
+      hover: 'hover:bg-blue-500/10'
+    },
+    green: {
+      header: 'text-green-300',
+      icon: 'text-green-400 bg-green-500/20 group-hover:bg-green-500/30',
+      hover: 'hover:bg-green-500/10'
+    },
+    gray: {
+      header: 'text-gray-300',
+      icon: 'text-gray-400 bg-gray-500/20 group-hover:bg-gray-500/30',
+      hover: 'hover:bg-gray-500/10'
+    },
+    purple: {
+      header: 'text-purple-300',
+      icon: 'text-purple-400 bg-purple-500/20 group-hover:bg-purple-500/30',
+      hover: 'hover:bg-purple-500/10'
+    }
+  }
+  return colors[color] || colors.blue
+}
 
 export function Sidebar() {
   return (
@@ -37,31 +118,69 @@ export function Sidebar() {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 p-4 relative">
-        <p className="px-4 py-2 text-xs font-semibold text-blue-300 uppercase tracking-wider">Main Menu</p>
-        <ul className="space-y-1.5 mt-2">
-          {navItems.map((item) => (
-            <li key={item.path}>
-              <NavLink
-                to={item.path}
-                className={({ isActive }) => cn(
-                  "flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group",
-                  isActive
-                    ? "nav-item-active font-medium"
-                    : "text-white/70 hover:bg-white/10 hover:text-white hover:translate-x-1"
-                )}
-              >
+      <nav className="flex-1 overflow-y-auto relative space-y-2 p-4">
+        {navSections.map((section) => {
+          const colors = getSectionColors(section.color)
+          return (
+            <div key={section.title} className="space-y-2">
+              {/* Section Header */}
+              <div className="flex items-center gap-2 px-4 py-2 mt-2">
                 <div className={cn(
-                  "p-2 rounded-lg transition-all duration-200",
-                  "bg-white/10 group-hover:bg-white/20"
-                )}>
-                  <item.icon className="w-4 h-4" />
-                </div>
-                <span className="text-sm">{item.label}</span>
-              </NavLink>
-            </li>
-          ))}
-        </ul>
+                  'h-0.5 flex-1 rounded-full',
+                  section.color === 'blue' && 'bg-blue-500/40',
+                  section.color === 'green' && 'bg-green-500/40',
+                  section.color === 'gray' && 'bg-gray-500/40',
+                  section.color === 'purple' && 'bg-purple-500/40'
+                )} />
+                <p className={cn('text-xs font-bold tracking-widest uppercase', colors.header)}>
+                  {section.title}
+                </p>
+                <div className={cn(
+                  'h-0.5 flex-1 rounded-full',
+                  section.color === 'blue' && 'bg-blue-500/40',
+                  section.color === 'green' && 'bg-green-500/40',
+                  section.color === 'gray' && 'bg-gray-500/40',
+                  section.color === 'purple' && 'bg-purple-500/40'
+                )} />
+              </div>
+
+              {/* Section Items */}
+              <ul className="space-y-1">
+                {section.items.map((item) => (
+                  <li key={item.path} className="relative">
+                    <NavLink
+                      to={item.path}
+                      className={({ isActive }) => cn(
+                        "flex items-start gap-3 px-4 py-2.5 rounded-xl transition-all duration-200 group",
+                        isActive
+                          ? "nav-item-active font-medium shadow-lg"
+                          : cn("text-white/70 hover:text-white", colors.hover)
+                      )}
+                    >
+                      {/* Icon Container - Color Coded */}
+                      <div className={cn(
+                        "p-2 rounded-lg transition-all duration-200 flex-shrink-0 mt-0.5",
+                        colors.icon
+                      )}>
+                        <item.icon className="w-4 h-4" />
+                      </div>
+
+                      {/* Label & Description */}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium">{item.label}</div>
+                        {item.description && (
+                          <div className="text-xs text-white/50 group-hover:text-white/70 transition-colors">
+                            {item.description}
+                          </div>
+                        )}
+                      </div>
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )
+        })}
       </nav>
 
       {/* Footer */}

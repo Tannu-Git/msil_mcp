@@ -1,7 +1,7 @@
 # Composite MCP Server Artefacts
 
-**Document Version**: 2.1  
-**Last Updated**: February 1, 2026  
+**Document Version**: 2.2  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
@@ -9,6 +9,8 @@
 ## 1. Overview
 
 This document describes the Composite MCP Server architecture, which aggregates tools from multiple backend services into a unified MCP interface for Host/Agent application consumption.
+
+**Phase 3 Addition**: Exposure Governance filters tools by role before authorization, ensuring users only see permitted tools in tools/list and cannot call non-exposed tools.
 
 > **📋 MCP Protocol Note**: The Host/Agent application (not the LLM directly) communicates with the MCP Server. The LLM generates tool call intents, and the Host application's MCP Client handles the actual protocol communication including `initialize`, `tools/list`, and `tools/call` operations.
 
@@ -53,7 +55,7 @@ This document describes the Composite MCP Server architecture, which aggregates 
 │   │   ┌─────────────────────────────────────────────────────────────────────────┐   │   │
 │   │   │                     ROUTING & DISPATCH LAYER                            │   │   │
 │   │   │                                                                         │   │   │
-│   │   │   Tool Request ──▶ Lookup ──▶ Authorize ──▶ Route ──▶ Execute          │   │   │
+│   │   │   Tool Request ──▶ Exposure Filter ──▶ Authorize ──▶ Route ──▶ Execute │   │   │
 │   │   │                                                                         │   │   │
 │   │   │   ┌───────────────────────────────────────────────────────────────────┐ │   │   │
 │   │   │   │ Router Logic                                                      │ │   │   │
@@ -73,10 +75,10 @@ This document describes the Composite MCP Server architecture, which aggregates 
 │   │   ┌─────────────────────────────────────────────────────────────────────────┐   │   │
 │   │   │                     CROSS-CUTTING CONCERNS                              │   │   │
 │   │   │                                                                         │   │   │
-│   │   │   ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐          │   │   │
-│   │   │   │  Auth   │ │ Policy  │ │  Audit  │ │  Cache  │ │ Metrics │          │   │   │
-│   │   │   │         │ │  (OPA)  │ │  (S3)   │ │ (Redis) │ │ (CW)    │          │   │   │
-│   │   │   └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘          │   │   │
+│   │   │   ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────┐│   │   │
+│   │   │   │  Auth   │ │ Policy  │ │  Audit  │ │  Cache  │ │ Metrics │ │Expose││   │   │
+│   │   │   │         │ │  (OPA)  │ │  (S3)   │ │ (Redis) │ │ (CW)    │ │Mgr   ││   │   │
+│   │   │   └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘ └──────┘│   │   │
 │   │   │                                                                         │   │   │
 │   │   └─────────────────────────────────────────────────────────────────────────┘   │   │
 │   │                                                                                 │   │

@@ -1,0 +1,1935 @@
+# MSIL MCP Server - Detailed Request Lifecycle & Component Interaction
+
+**Document Version**: 1.0  
+**Date**: February 2, 2026  
+**Classification**: Internal  
+**Audience**: Senior Architects, Tech Leads, Security Team
+
+---
+
+## Executive Summary
+
+This document provides a comprehensive, step-by-step walkthrough of how a single request flows through the MSIL MCP Server, detailing every component interaction, security checkpoint, validation layer, and decision point. This is intended for architectural review, compliance audits, and security assessments.
+
+**Scope**: Complete request lifecycle for a tool execution via the MCP protocol endpoint.
+
+---
+
+## Table of Contents
+
+1. [Request Entry & Transport Layer](#1-request-entry--transport-layer)
+2. [Authentication Layer](#2-authentication-layer)
+3. [Authorization & Access Control](#3-authorization--access-control)
+4. [Request Parsing & Validation](#4-request-parsing--validation)
+5. [Rate Limiting & Quota Management](#5-rate-limiting--quota-management)
+6. [Policy Enforcement](#6-policy-enforcement)
+7. [Tool Registry Lookup](#7-tool-registry-lookup)
+8. [Tool Execution Layer](#8-tool-execution-layer)
+9. [Response Handling](#9-response-handling)
+10. [Error Handling & Recovery](#10-error-handling--recovery)
+11. [Audit & Compliance Logging](#11-audit--compliance-logging)
+12. [Observability & Tracing](#12-observability--tracing)
+
+---
+
+## 1. Request Entry & Transport Layer
+
+### 1.1 Incoming Request
+
+**Where**: Client initiates HTTP POST request to server
+
+```
+CLIENT (Host/Agent Application)
+  ↓
+FIREWALL (AWS Security Group, WAF)
+  ↓
+AWS CloudFront + WAF
+  ↓
+Application Load Balancer (ALB)
+  ↓
+Kubernetes Ingress
+  ↓
+FastAPI Server (Port 8000)
+```
+
+### 1.2 Network Layer Processing
+
+**File Reference**: `mcp-server/app/main.py`
+
+#### What happens at this stage:
+
+```python
+# 1. TCP/IP connection established
+# 2. TLS handshake (HTTPS in production)
+# 3. HTTP header parsing
+# 4. FastAPI receives request
+```
+
+**Sample incoming request:**
+
+```http
+POST /api/mcp HTTP/1.1
+Host: mcp-staging.msil.com
+Content-Type: application/json
+Content-Length: 285
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+X-Correlation-ID: req-abc123-def456
+X-API-Key: msil-mcp-key-2026
+User-Agent: msil-host-app/1.0.0
+Accept: application/json
+X-Forwarded-For: 10.20.30.40
+X-Forwarded-Proto: https
+
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "get_dealer_enquiries",
+    "arguments": {
+      "dealer_id": "DL123456"
+    }
+  }
+}
+```
+
+### 1.3 CORS & Security Headers
+
+**File Reference**: `mcp-server/app/main.py` (Lines 160-175)
+
+```python
+_fastapi_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,  # Configured via env var
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
+)
+```
+
+**Security checks applied:**
+- ✅ Origin validation (only allowed domains)
+- ✅ Method whitelisting (POST required for MCP)
+- ✅ Preflight request handling (OPTIONS)
+
+### 1.4 Request Logging
+
+**File Reference**: `mcp-server/app/main.py` - `MonitoringMiddleware`
+
+```python
+class MonitoringMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Log incoming request
+        logger.info(f"Incoming: {request.method} {request.url.path}")
+        
+        # Measure response time
+        start_time = time.time()
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        
+        # Log response
+        logger.info(f"Response: {response.status_code} ({process_time:.2f}s)")
+        return response
+```
+
+**Logged Information:**
+- ✅ Request method and path
+- ✅ Processing time
+- ✅ Response status code
+- ✅ Timestamp (ISO format)
+
+---
+
+## 2. Authentication Layer
+
+### 2.1 Token Extraction
+
+**File Reference**: `mcp-server/app/api/mcp.py` (Lines 72-90)
+
+The request reaches the MCP handler:
+
+```python
+@router.post("/mcp")
+async def mcp_handler(
+    request: MCPRequest,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    x_correlation_id: Optional[str] = Header(None, alias="X-Correlation-ID")
+) -> MCPResponse:
+    correlation_id = x_correlation_id or str(uuid.uuid4())
+    logger.info(f"[{correlation_id}] MCP Request: {request.method}")
+```
+
+**Step 1: Extract headers**
+- Extract `Authorization: Bearer {JWT}`
+- Extract `X-API-Key` (for MVP, optional)
+- Extract `X-Correlation-ID` (for request tracing)
+- Generate correlation_id if not provided
+
+### 2.2 Authentication Strategy
+
+**File Reference**: `mcp-server/app/core/auth/oauth2.py`
+
+#### Two Authentication Paths:
+
+**Path A: Production (OAuth2/OIDC)**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. EXTRACT BEARER TOKEN                                     │
+│    Authorization: Bearer eyJhbGc...                          │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. VALIDATE JWT SIGNATURE                                   │
+│    Using MSIL IdP public key (JWKS endpoint)                │
+│                                                             │
+│    Header:  {alg: "RS256", kid: "key-1"}                   │
+│    Payload: {sub, aud, iss, exp, iat, scope, roles}        │
+│    Sig:     HMAC-SHA256(header.payload, public_key)        │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. VALIDATE TOKEN CLAIMS                                    │
+│    ✓ exp (expiration) > current_time                        │
+│    ✓ iss (issuer) == "https://msil-idp.example.com"        │
+│    ✓ aud (audience) includes "msil-mcp-server"             │
+│    ✓ iat (issued at) reasonable (not in future)            │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. EXTRACT USER CONTEXT                                     │
+│    sub: user@msil.com                                       │
+│    roles: [operator, viewer]                                │
+│    departments: [dealer-ops]                                │
+│    scope: ["mcp:tools:read", "mcp:tools:write"]            │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+          ✅ AUTHENTICATED
+```
+
+**Path B: Development/Demo Mode**
+
+```python
+if settings.DEMO_MODE:
+    # Parse basic auth or use demo credentials
+    user_id = extract_demo_user()  # From X-API-Key or hardcoded
+    user_context = {
+        "user_id": "developer@msil.com",
+        "roles": ["admin"],
+        "scope": ["mcp:tools:read", "mcp:tools:write"]
+    }
+```
+
+### 2.3 JWT Token Structure (MSIL IdP)
+
+```json
+{
+  "header": {
+    "alg": "RS256",
+    "typ": "JWT",
+    "kid": "msil-idp-key-2026"
+  },
+  "payload": {
+    "sub": "user@msil.com",
+    "aud": "msil-mcp-server",
+    "iss": "https://msil-idp.example.com",
+    "exp": 1706700000,
+    "iat": 1706613600,
+    "nbf": 1706613600,
+    "scope": "mcp:tools:read mcp:tools:write mcp:admin",
+    "roles": ["operator", "viewer"],
+    "departments": ["dealer-operations"],
+    "pim_elevation": false,
+    "pim_elevation_expires": null
+  },
+  "signature": "HMACSHA256(base64(header).base64(payload), public_key)"
+}
+```
+
+### 2.4 Authentication Failure Scenarios
+
+```
+Scenario 1: No Authorization Header
+  Response: 401 Unauthorized
+  Error: "Authorization header missing"
+  
+Scenario 2: Invalid JWT Format
+  Response: 401 Unauthorized
+  Error: "Invalid token format"
+  
+Scenario 3: Token Expired
+  Response: 401 Unauthorized
+  Error: "Token expired at 2026-01-31T10:00:00Z"
+  
+Scenario 4: Invalid Signature
+  Response: 401 Unauthorized
+  Error: "Token signature verification failed"
+  
+Scenario 5: Token not yet valid (nbf in future)
+  Response: 401 Unauthorized
+  Error: "Token not yet valid"
+  
+Scenario 6: Audience mismatch
+  Response: 401 Unauthorized
+  Error: "Invalid audience claim"
+```
+
+**File Reference**: `mcp-server/app/core/auth/validator.py`
+
+---
+
+## 3. Authorization & Access Control
+
+### 3.1 Role-Based Access Control (RBAC)
+
+Once authentication succeeds, the system checks what the user is allowed to do.
+
+**File Reference**: `mcp-server/app/core/auth/rbac.py`
+
+```python
+ROLE_PERMISSIONS = {
+    "viewer": {
+        "tools/list": True,
+        "tools/call": False,
+        "tools/read": True,
+        "tools/write": False
+    },
+    "operator": {
+        "tools/list": True,
+        "tools/call": True,      # Only read-level tools
+        "tools/read": True,
+        "tools/write": True      # Limited write tools
+    },
+    "admin": {
+        "*": True                 # All permissions
+    }
+}
+```
+
+### 3.2 Authorization Decision Tree
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ REQUEST ARRIVES                                             │
+│ User: operator@msil.com                                     │
+│ Roles: [operator, viewer]                                   │
+│ Requested Tool: create_booking (risk_level: write)          │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 1. CHECK ROLE PERMISSIONS                                   │
+│    Does "operator" role have "tools/call" permission?       │
+│    ✓ YES → Continue                                         │
+│    ✗ NO → Return 403 Forbidden                              │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. CHECK TOOL-LEVEL ACCESS                                  │
+│    Is tool "create_booking" allowed for "operator" role?    │
+│    ✓ YES → Continue                                         │
+│    ✗ NO → Return 403 Forbidden                              │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. CHECK DEPARTMENT/BUSINESS UNIT                           │
+│    User department: "dealer-operations"                     │
+│    Tool allowed departments: ["dealer-operations", "admin"] │
+│    ✓ MATCH → Continue                                       │
+│    ✗ NO MATCH → Return 403 Forbidden                        │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. CHECK PIM ELEVATION (for privileged tools)               │
+│    Tool risk_level: "privileged"                            │
+│    User pim_elevation: false                                │
+│    ✗ ELEVATION REQUIRED → Return 403                        │
+│       "PIM elevation required for privileged operations"     │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+          ✅ AUTHORIZED TO PROCEED
+```
+
+### 3.3 Authorization Failure Responses
+
+```
+Code 403 - Forbidden Scenarios:
+
+1. Role insufficient:
+   {
+     "code": 403,
+     "error": "INSUFFICIENT_ROLE",
+     "message": "User role 'viewer' cannot execute tools",
+     "required_roles": ["operator", "admin"]
+   }
+
+2. Tool not allowed for role:
+   {
+     "code": 403,
+     "error": "TOOL_FORBIDDEN",
+     "message": "Tool 'delete_customer_data' not allowed for 'operator'",
+     "required_roles": ["admin"]
+   }
+
+3. PIM elevation required:
+   {
+     "code": 403,
+     "error": "ELEVATION_REQUIRED",
+     "message": "PIM elevation required for privileged tool execution",
+     "elevation_required_for_ms": 300000
+   }
+
+4. Department mismatch:
+   {
+     "code": 403,
+     "error": "DEPARTMENT_FORBIDDEN",
+     "message": "User department 'sales' cannot access 'dealer-operations' tools"
+   }
+```
+
+---
+
+## 4. Request Parsing & Validation
+
+### 4.1 Pydantic Model Validation
+
+**File Reference**: `mcp-server/app/api/mcp.py` (Lines 20-45)
+
+```python
+class MCPRequest(BaseModel):
+    """MCP JSON-RPC Request - Auto-validated by Pydantic"""
+    jsonrpc: str = Field(..., pattern="^2.0$")      # Must be "2.0"
+    id: Union[int, str] = Field(...)                 # Request ID
+    method: str = Field(...)                         # Method name
+    params: Optional[Dict[str, Any]] = Field(None)   # Parameters
+
+    @validator('jsonrpc')
+    def validate_jsonrpc(cls, v):
+        if v != "2.0":
+            raise ValueError("jsonrpc must be '2.0'")
+        return v
+
+    @validator('method')
+    def validate_method(cls, v):
+        allowed = ["initialize", "tools/list", "tools/call"]
+        if v not in allowed:
+            raise ValueError(f"method must be one of {allowed}")
+        return v
+```
+
+### 4.2 Validation Steps
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ INCOMING JSON BODY                                          │
+│ {                                                           │
+│   "jsonrpc": "2.0",                                         │
+│   "id": 1,                                                  │
+│   "method": "tools/call",                                   │
+│   "params": {...}                                           │
+│ }                                                           │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 1. JSON PARSING                                             │
+│    FastAPI parses JSON → Python dict                        │
+│    ✓ Valid JSON → Continue                                  │
+│    ✗ Invalid JSON → 400 Bad Request                         │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. PYDANTIC VALIDATION (MCPRequest)                         │
+│    Check required fields: jsonrpc, id, method              │
+│    ✓ All present → Continue                                 │
+│    ✗ Missing field → 422 Unprocessable Entity              │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. FIELD TYPE VALIDATION                                    │
+│    jsonrpc: str matching "^2.0$"                            │
+│    id: Union[int, str]                                      │
+│    method: str from allowed list                            │
+│    params: Optional[Dict]                                   │
+│    ✓ All types correct → Continue                           │
+│    ✗ Type mismatch → 422 Unprocessable Entity              │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. METHOD-SPECIFIC VALIDATION                               │
+│    if method == "tools/call":                               │
+│      params must include:                                   │
+│        - name: string (tool identifier)                     │
+│        - arguments: dict (tool parameters)                  │
+│    ✓ Valid → Continue                                       │
+│    ✗ Invalid → 400 Bad Request                              │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+          ✅ REQUEST STRUCTURE VALID
+```
+
+### 4.3 Validation Failure Examples
+
+```
+Error 1: Invalid JSON
+{
+  "code": -32700,
+  "message": "Parse error",
+  "data": {
+    "details": "Expecting value: line 1 column 1 (char 0)"
+  }
+}
+
+Error 2: Missing Required Field
+{
+  "code": -32602,
+  "message": "Invalid params",
+  "data": {
+    "validation_errors": [
+      {
+        "field": "method",
+        "error": "field required"
+      }
+    ]
+  }
+}
+
+Error 3: Invalid Method Value
+{
+  "code": -32601,
+  "message": "Method not found",
+  "data": {
+    "method": "invalid_method",
+    "allowed": ["initialize", "tools/list", "tools/call"]
+  }
+}
+
+Error 4: Type Mismatch
+{
+  "code": -32602,
+  "message": "Invalid params",
+  "data": {
+    "validation_errors": [
+      {
+        "field": "id",
+        "error": "value is not a valid integer or string"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 5. Rate Limiting & Quota Management
+
+### 5.1 Rate Limit Strategy
+
+**File Reference**: `mcp-server/app/core/ratelimit/manager.py`
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ USER CONTEXT                                                │
+│ user_id: developer@msil.com                                 │
+│ roles: [operator, viewer]                                   │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 1. DETERMINE RATE LIMIT TIER                                │
+│    From user token claims or RBAC rules                     │
+│    Tiers:                                                   │
+│      - viewer: 20 req/min (permissive tier)                 │
+│      - operator: 100 req/min (standard tier)                │
+│      - admin: 200 req/min (strict tier)                     │
+│    ✓ Found: operator → 100 req/min                          │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. RETRIEVE REDIS COUNTER                                   │
+│    Key: ratelimit:user:{user_id}:{window}                   │
+│    Example: ratelimit:user:dev@msil.com:2026-02-02-10:30   │
+│                                                             │
+│    Current value: 45 (45 requests in this minute)           │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. CHECK AGAINST LIMIT                                      │
+│    Current: 45                                              │
+│    Limit: 100 (operator tier)                               │
+│    45 < 100 ✓ WITHIN LIMIT → Continue                      │
+│    45 ≥ 100 ✗ EXCEEDED → 429 Too Many Requests             │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. INCREMENT COUNTER                                        │
+│    INCR ratelimit:user:{user_id}:{window}                   │
+│    Redis operation: atomic increment                        │
+│    TTL: 60 seconds (window length)                          │
+│    New value: 46                                            │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 5. SET RESPONSE HEADERS                                     │
+│    X-RateLimit-Limit: 100                                   │
+│    X-RateLimit-Remaining: 54                                │
+│    X-RateLimit-Reset: 1706700060 (Unix timestamp)           │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+          ✅ RATE LIMIT CHECK PASSED
+```
+
+### 5.2 Rate Limit Configuration by Tool
+
+**Tool-Level Rate Limiting**:
+
+```yaml
+# tools/create_booking.yaml
+security_config:
+  rate_limit_tier: strict      # 20 req/min regardless of user tier
+  risk_level: write
+
+# tools/get_dealer_enquiries.yaml
+security_config:
+  rate_limit_tier: standard    # Use user's tier (default 100 req/min)
+  risk_level: read
+```
+
+### 5.3 Rate Limit Exceeded Response
+
+```
+Status: 429 Too Many Requests
+
+Headers:
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1706700060
+Retry-After: 45
+
+Body:
+{
+  "code": -32000,
+  "error": "RATE_LIMITED",
+  "message": "Rate limit exceeded: 100 requests per minute",
+  "details": {
+    "limit": 100,
+    "window_seconds": 60,
+    "retry_after_seconds": 45,
+    "reset_at": "2026-02-02T10:31:00Z"
+  }
+}
+```
+
+### 5.4 Rate Limit Implementation Details
+
+```python
+# Redis key structure
+ratelimit:{type}:{identifier}:{window}
+
+# Examples:
+ratelimit:user:developer@msil.com:2026-02-02-10:30
+ratelimit:user:operator@msil.com:2026-02-02-10:30
+ratelimit:api_key:key_abc123:2026-02-02-10:30
+ratelimit:global:all:2026-02-02-10:30
+
+# Window calculation (sliding or fixed)
+window = floor(current_timestamp / 60)  # 60-second window
+```
+
+---
+
+## 6. Policy Enforcement
+
+### 6.1 Open Policy Agent (OPA) Integration
+
+**File Reference**: `mcp-server/app/core/policy/opa_client.py`
+
+After authentication and authorization, the system asks OPA (Open Policy Agent): "Is this specific action allowed given all business rules?"
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ REQUEST CONTEXT                                             │
+│ user: developer@msil.com                                    │
+│ tool: create_booking                                        │
+│ dealer_id: DL123456                                         │
+│ time: 2026-02-02 10:30:00 UTC                               │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ PACKAGE CONTEXT FOR OPA                                     │
+│ {                                                           │
+│   "user": {                                                 │
+│     "id": "developer@msil.com",                             │
+│     "roles": ["operator", "viewer"],                        │
+│     "department": "dealer-ops",                             │
+│     "is_elevated": false                                    │
+│   },                                                        │
+│   "resource": {                                             │
+│     "type": "tool",                                         │
+│     "name": "create_booking",                               │
+│     "risk_level": "write"                                   │
+│   },                                                        │
+│   "action": "execute",                                      │
+│   "context": {                                              │
+│     "dealer_id": "DL123456",                                │
+│     "timestamp": "2026-02-02T10:30:00Z"                     │
+│   },                                                        │
+│   "environment": {                                          │
+│     "time_of_day": "business_hours",                        │
+│     "ip_address": "10.20.30.40"                             │
+│   }                                                         │
+│ }                                                           │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ HTTP POST to OPA (localhost:8181)                           │
+│ /v1/data/msil_mcp/tools/authorize_tool_execution            │
+│                                                             │
+│ OPA evaluates Rego rules...                                 │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ OPA POLICY EVALUATION (Rego)                                │
+│                                                             │
+│ Rule 1: Check if user is in business hours                 │
+│         time_of_day != "business_hours" → DENY              │
+│         ✓ PASS: Currently 10:30 AM                          │
+│                                                             │
+│ Rule 2: Check dealer assignment                            │
+│         user.dealers[] contains dealer_id → ALLOW           │
+│         ✓ PASS: Developer assigned to DL123456             │
+│                                                             │
+│ Rule 3: Check risk level vs role                           │
+│         tool.risk_level == "write"                          │
+│         user.roles[] contains "operator" → ALLOW            │
+│         ✓ PASS: Operator can execute write tools            │
+│                                                             │
+│ Rule 4: Check department access                            │
+│         user.department in tool.allowed_departments[]       │
+│         ✓ PASS: dealer-ops has access to booking tools     │
+│                                                             │
+│ Rule 5: Fraud detection (ML model result)                  │
+│         risk_score < 0.3 → ALLOW                           │
+│         ✓ PASS: Risk score 0.15 (normal behavior)          │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ OPA RESPONSE                                                │
+│ {                                                           │
+│   "result": {                                               │
+│     "allow": true,                                          │
+│     "reasons": [                                            │
+│       "operator role authorized",                           │
+│       "within business hours",                              │
+│       "dealer assignment verified",                         │
+│       "low fraud risk"                                      │
+│     ]                                                       │
+│   }                                                         │
+│ }                                                           │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+          ✅ POLICY CHECK PASSED
+```
+
+### 6.2 Rego Policy Rules (Sample)
+
+**File Reference**: `mcp-server/app/core/policy/rego/tools.rego`
+
+```rego
+package msil_mcp.tools
+
+# Main authorization decision
+default allow = false
+
+# Allow write operations only during business hours
+allow {
+    input.resource.risk_level == "write"
+    input.environment.time_of_day == "business_hours"
+    has_required_role
+    within_dealer_scope
+}
+
+# Allow read operations anytime
+allow {
+    input.resource.risk_level == "read"
+    has_viewer_or_higher_role
+}
+
+# Allow privileged operations only with elevation + admin role
+allow {
+    input.resource.risk_level == "privileged"
+    input.user.is_elevated == true
+    has_admin_role
+    input.environment.ip_address in approved_ips
+}
+
+# Helper rules
+has_required_role {
+    input.user.roles[_] == "operator"
+}
+
+has_required_role {
+    input.user.roles[_] == "admin"
+}
+
+has_viewer_or_higher_role {
+    input.user.roles[_] == "viewer"
+}
+
+has_viewer_or_higher_role {
+    input.user.roles[_] == "operator"
+}
+
+has_viewer_or_higher_role {
+    input.user.roles[_] == "admin"
+}
+
+has_admin_role {
+    input.user.roles[_] == "admin"
+}
+
+within_dealer_scope {
+    dealer_id := input.context.dealer_id
+    dealer_id in object.keys(get_user_dealers)
+}
+
+get_user_dealers[id] = true {
+    data.msil_mcp.user_dealers[input.user.id][id]
+}
+```
+
+### 6.3 Policy Denial Response
+
+```
+Status: 403 Forbidden
+
+Body:
+{
+  "code": "POLICY_DENIED",
+  "error": "POLICY_DENIED",
+  "message": "Policy evaluation denied access",
+  "details": {
+    "denied_by": "msil_mcp.tools.authorize_tool_execution",
+    "reasons": [
+      "Outside business hours (current: 22:30, allowed: 08:00-18:00)",
+      "write-level tools not allowed outside business hours"
+    ],
+    "request_id": "req-abc123"
+  }
+}
+```
+
+---
+
+## 7. Tool Registry Lookup
+
+### 7.1 Tool Discovery from Registry
+
+**File Reference**: `mcp-server/app/core/tools/registry.py`
+
+After passing all security checks, the system looks up the requested tool.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ TOOL REGISTRY LOOKUP                                        │
+│ Requested: "create_booking"                                 │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 1. SEARCH IN REGISTRY                                       │
+│    tool_registry.get_tool("create_booking")                 │
+│                                                             │
+│    Registry source: In-memory or Database                   │
+│    In-memory: Loaded from tools/*.yaml at startup           │
+│    Database: PostgreSQL msil_mcp.tools table                │
+│                                                             │
+│    ✓ FOUND: Tool definition loaded                          │
+│    ✗ NOT FOUND → 404 Not Found                              │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. VALIDATE TOOL STATE                                      │
+│    Checks:                                                  │
+│    - deprecated: false                                      │
+│    - enabled: true                                          │
+│    - version: compatible                                    │
+│    - active: true                                           │
+│                                                             │
+│    ✓ VALID STATE → Continue                                 │
+│    ✗ DEPRECATED → Return warning but continue               │
+│    ✗ DISABLED → Return 503 Service Unavailable              │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. RETRIEVE TOOL DEFINITION                                 │
+│    {                                                        │
+│      "name": "create_booking",                              │
+│      "description": "Create a new booking...",              │
+│      "version": "1.0.0",                                    │
+│      "input_schema": {...},                                 │
+│      "output_schema": {...},                                │
+│      "api_config": {                                        │
+│        "endpoint": "/v1/bookings",                          │
+│        "method": "POST",                                    │
+│        "timeout_ms": 30000                                  │
+│      },                                                     │
+│      "security_config": {                                   │
+│        "risk_level": "write",                               │
+│        "requires_confirmation": true,                       │
+│        "allowed_roles": ["operator", "admin"]               │
+│      },                                                     │
+│      "validation_config": {                                 │
+│        "custom_validators": [...]                           │
+│      }                                                      │
+│    }                                                        │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+          ✅ TOOL DEFINITION LOADED
+```
+
+### 7.2 Tool Not Found Response
+
+```
+Status: 404 Not Found
+
+Body:
+{
+  "code": -32601,
+  "message": "Method not found",
+  "data": {
+    "tool_requested": "invalid_tool_name",
+    "available_tools_count": 42,
+    "similar_tools": [
+      "create_booking",
+      "update_booking",
+      "get_booking_status"
+    ]
+  }
+}
+```
+
+---
+
+## 8. Tool Execution Layer
+
+### 8.1 Input Validation Against Schema
+
+**File Reference**: `mcp-server/app/core/tools/validator.py`
+
+Before executing, validate that arguments match the tool's input schema.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ TOOL ARGUMENTS FROM REQUEST                                 │
+│ {                                                           │
+│   "dealer_id": "DL123456",                                  │
+│   "customer_email": "john@example.com",                     │
+│   "vehicle_preference": "Swift"                             │
+│ }                                                           │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ TOOL INPUT SCHEMA (from registry)                           │
+│ {                                                           │
+│   "type": "object",                                         │
+│   "properties": {                                           │
+│     "dealer_id": {                                          │
+│       "type": "string",                                     │
+│       "pattern": "^DL[0-9]{6}$",                            │
+│       "description": "Dealer code"                          │
+│     },                                                      │
+│     "customer_email": {                                     │
+│       "type": "string",                                     │
+│       "format": "email",                                    │
+│       "description": "Customer email"                       │
+│     },                                                      │
+│     "vehicle_preference": {                                 │
+│       "type": "string",                                     │
+│       "enum": ["Swift", "Ciaz", "Ertiga", "Baleno"]         │
+│       "description": "Preferred vehicle model"              │
+│     }                                                       │
+│   },                                                        │
+│   "required": ["dealer_id", "customer_email"],              │
+│   "additionalProperties": false                             │
+│ }                                                           │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 1. JSONSCHEMA VALIDATION                                    │
+│    Using jsonschema library                                 │
+│    validate(instance, schema)                               │
+│                                                             │
+│    Checks:                                                  │
+│    - All required fields present                            │
+│    - All fields match type                                  │
+│    - Patterns match (regex)                                 │
+│    - Enums are valid                                        │
+│    - No extra fields (additionalProperties)                 │
+│                                                             │
+│    ✓ ALL VALID → Continue                                   │
+│    ✗ INVALID → 400 Bad Request                              │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. CUSTOM VALIDATORS                                        │
+│    From validation_config.custom_validators:                │
+│                                                             │
+│    validate_dealer_exists()                                 │
+│      Query DB: SELECT * FROM dealers WHERE code=DL123456    │
+│      ✓ Found → Continue                                     │
+│      ✗ Not Found → 400 Invalid dealer                       │
+│                                                             │
+│    validate_email_format()                                  │
+│      Check MX records, format, etc.                         │
+│      ✓ Valid → Continue                                     │
+│                                                             │
+│    validate_booking_window()                                │
+│      Check if time window allows bookings                   │
+│      ✓ Allowed → Continue                                   │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. SANITIZATION                                             │
+│    Remove/escape potentially harmful data                   │
+│                                                             │
+│    dealer_id: "DL123456" → No change (alphanumeric)         │
+│    email: "john@example.com" → No change (standard)         │
+│    preference: "Swift" → No change (enum value)             │
+│                                                             │
+│    Check for SQL injection, XSS, etc.                       │
+│    ✓ SAFE → Continue                                        │
+│    ✗ MALICIOUS → 400 Injection Detected                     │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+          ✅ ARGUMENTS VALIDATED
+```
+
+### 8.2 Input Validation Failure Response
+
+```
+Status: 400 Bad Request
+
+Error 1: Missing Required Field
+{
+  "code": -32602,
+  "error": "INVALID_PARAMS",
+  "message": "Invalid tool parameters",
+  "details": {
+    "validation_errors": [
+      {
+        "field": "customer_email",
+        "error": "required field missing"
+      }
+    ]
+  }
+}
+
+Error 2: Pattern Mismatch
+{
+  "code": -32602,
+  "error": "INVALID_PARAMS",
+  "message": "Invalid tool parameters",
+  "details": {
+    "validation_errors": [
+      {
+        "field": "dealer_id",
+        "value": "INVALID",
+        "error": "does not match pattern ^DL[0-9]{6}$"
+      }
+    ]
+  }
+}
+
+Error 3: SQL Injection Detected
+{
+  "code": 400,
+  "error": "INJECTION_DETECTED",
+  "message": "Potential SQL injection pattern detected",
+  "details": {
+    "field": "dealer_id",
+    "pattern": "DROP TABLE"
+  }
+}
+```
+
+### 8.3 Step-Up Confirmation Check
+
+**File Reference**: `mcp-server/app/core/security/confirmation.py`
+
+For write/privileged tools, verify user explicitly confirmed the action.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ CHECK TOOL SECURITY CONFIG                                  │
+│ requires_confirmation: true (write-level tool)              │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ LOOK FOR user_confirmed IN ARGUMENTS                        │
+│                                                             │
+│ Arguments: {                                                │
+│   "dealer_id": "DL123456",                                  │
+│   "user_confirmed": true  ← MUST BE PRESENT & TRUE          │
+│ }                                                           │
+│                                                             │
+│ ✓ user_confirmed == true → Continue (explicit consent)      │
+│ ✗ user_confirmed == false → 403 Forbidden (rejected)        │
+│ ✗ user_confirmed missing → 403 Forbidden (not confirmed)    │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+          ✅ CONFIRMATION VERIFIED
+```
+
+### 8.4 Step-Up Confirmation Failure
+
+```
+Status: 403 Forbidden
+
+Body:
+{
+  "code": "USER_CONFIRMATION_REQUIRED",
+  "error": "USER_CONFIRMATION_REQUIRED",
+  "message": "Write operation requires explicit user confirmation",
+  "details": {
+    "tool": "create_booking",
+    "risk_level": "write",
+    "action": "Please confirm this action by adding user_confirmed: true to arguments",
+    "example": {
+      "arguments": {
+        "dealer_id": "DL123456",
+        "user_confirmed": true
+      }
+    }
+  }
+}
+```
+
+### 8.5 Backend API Call (Tool Execution)
+
+**File Reference**: `mcp-server/app/core/tools/executor.py`
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ PREPARE BACKEND REQUEST                                     │
+│                                                             │
+│ From tool config:                                           │
+│   endpoint: /v1/bookings                                    │
+│   method: POST                                              │
+│   timeout_ms: 30000                                         │
+│   api_config.body_mapping: {...}                            │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 1. DETERMINE API GATEWAY TARGET                             │
+│    From settings.API_GATEWAY_MODE:                          │
+│                                                             │
+│    if mode == "msil_apim":                                  │
+│      base_url = settings.MSIL_APIM_BASE_URL                 │
+│      # https://apim-dev.msil.example.com                    │
+│    elif mode == "mock":                                     │
+│      base_url = settings.MOCK_API_BASE_URL                  │
+│      # http://localhost:8080                                │
+│                                                             │
+│    Full URL: https://apim-dev.msil.example.com/v1/bookings │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. BUILD REQUEST HEADERS                                    │
+│    Authorization: Bearer {APIM_JWT}                         │
+│    X-Subscription-Key: {MSIL_APIM_KEY}                      │
+│    Content-Type: application/json                           │
+│    X-Correlation-ID: {same_correlation_id}                 │
+│    X-Request-ID: {new_uuid}                                 │
+│    User-Agent: msil-mcp-server/2.0                          │
+│    X-MCP-Trace: {base64_encoded_trace}                      │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. MAP PARAMETERS TO REQUEST BODY                           │
+│    From tool arguments: {dealer_id, customer_email, ...}    │
+│    Using api_config.body_mapping                            │
+│                                                             │
+│    Tool input → Body payload                                │
+│    dealer_id → dealerId (camelCase)                         │
+│    customer_email → customerEmail                           │
+│    vehicle_preference → vehicleModel                        │
+│                                                             │
+│    Final body:                                              │
+│    {                                                        │
+│      "dealerId": "DL123456",                                │
+│      "customerEmail": "john@example.com",                   │
+│      "vehicleModel": "Swift"                                │
+│    }                                                        │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. CHECK IDEMPOTENCY                                        │
+│    For POST/PUT operations, check if already executed       │
+│                                                             │
+│    Idempotency key: hash({tool_name, args, user})          │
+│    Check Redis: idempotency:{key}                           │
+│                                                             │
+│    ✓ NOT SEEN: Proceed with execution                       │
+│    ✗ SEEN: Return cached response (idempotent)             │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 5. MAKE HTTP REQUEST TO BACKEND                             │
+│                                                             │
+│    POST /v1/bookings HTTP/1.1                               │
+│    Authorization: Bearer {token}                            │
+│    Content-Type: application/json                           │
+│    X-Correlation-ID: req-abc123                             │
+│    Timeout: 30 seconds                                      │
+│                                                             │
+│    {                                                        │
+│      "dealerId": "DL123456",                                │
+│      "customerEmail": "john@example.com",                   │
+│      "vehicleModel": "Swift"                                │
+│    }                                                        │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 6. RECEIVE & PARSE RESPONSE                                 │
+│    HTTP 200 OK                                              │
+│    {                                                        │
+│      "bookingId": "BK123456789",                            │
+│      "dealerId": "DL123456",                                │
+│      "status": "confirmed",                                 │
+│      "createdAt": "2026-02-02T10:30:00Z"                    │
+│    }                                                        │
+│                                                             │
+│    ✓ 200-299: Success                                       │
+│    ✗ 400-499: Client error                                  │
+│    ✗ 500-599: Server error                                  │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 7. STORE IDEMPOTENCY RESULT                                 │
+│    SET idempotency:{key} response_json EX 3600              │
+│    Cache for 1 hour (configurable)                          │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+          ✅ BACKEND CALL COMPLETE
+```
+
+### 8.6 Backend Execution Timeout
+
+```
+If backend doesn't respond within timeout_ms (30 seconds):
+
+{
+  "code": -32603,
+  "error": "TOOL_EXECUTION_FAILED",
+  "message": "Tool execution timeout",
+  "details": {
+    "tool": "create_booking",
+    "timeout_ms": 30000,
+    "error": "Request exceeded 30 second timeout"
+  }
+}
+```
+
+---
+
+## 9. Response Handling
+
+### 9.1 Response Transformation
+
+**File Reference**: `mcp-server/app/core/response/shaper.py`
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ BACKEND RESPONSE                                            │
+│ {                                                           │
+│   "bookingId": "BK123456789",                               │
+│   "dealerId": "DL123456",                                   │
+│   "status": "confirmed",                                    │
+│   "createdAt": "2026-02-02T10:30:00Z"                       │
+│ }                                                           │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 1. VALIDATE RESPONSE AGAINST SCHEMA                         │
+│    From tool.output_schema                                  │
+│    ✓ Valid → Continue                                       │
+│    ✗ Invalid → Log warning, return as-is                    │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. RESPONSE SHAPING (Optional)                              │
+│    From tool.response_mapping:                              │
+│                                                             │
+│    Select fields: ["bookingId", "status", "createdAt"]     │
+│    Rename fields: {bookingId → id, createdAt → timestamp}  │
+│    Add computed fields: {success: true}                     │
+│    Remove PII: Strip any PII found in response              │
+│                                                             │
+│    Shaped response:                                         │
+│    {                                                        │
+│      "id": "BK123456789",                                   │
+│      "status": "confirmed",                                 │
+│      "timestamp": "2026-02-02T10:30:00Z",                   │
+│      "success": true                                        │
+│    }                                                        │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. PII MASKING IN RESPONSE                                  │
+│    Scan response for PII:                                   │
+│    - Aadhaar numbers (12 digits)                            │
+│    - PAN numbers (ABCDE1234F)                               │
+│    - Mobile numbers (10 digits)                             │
+│    - Email addresses                                        │
+│                                                             │
+│    ✓ NO PII FOUND → Continue                                │
+│    ✗ PII FOUND → MASK IT                                    │
+│      "customer_email": "john@example.com"                   │
+│      → "customer_email": "[EMAIL_REDACTED]"                 │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. WRAP IN MCP RESPONSE FORMAT                              │
+│    {                                                        │
+│      "jsonrpc": "2.0",                                      │
+│      "id": 1,                                               │
+│      "result": {                                            │
+│        "id": "BK123456789",                                 │
+│        "status": "confirmed",                               │
+│        "timestamp": "2026-02-02T10:30:00Z",                 │
+│        "success": true                                      │
+│      }                                                      │
+│    }                                                        │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+          ✅ RESPONSE READY FOR CLIENT
+```
+
+### 9.2 Successful Response Format
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "id": "BK123456789",
+    "status": "confirmed",
+    "timestamp": "2026-02-02T10:30:00Z",
+    "success": true,
+    "metadata": {
+      "execution_time_ms": 1250,
+      "backend_service": "booking-service",
+      "trace_id": "req-abc123",
+      "correlation_id": "req-abc123-def456"
+    }
+  }
+}
+```
+
+---
+
+## 10. Error Handling & Recovery
+
+### 10.1 Error Hierarchy
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ ERROR HIERARCHY IN MCP SERVER                               │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│ 1. TRANSPORT LAYER ERRORS (HTTP)                            │
+│    - 400 Bad Request (malformed request)                    │
+│    - 401 Unauthorized (auth failed)                         │
+│    - 403 Forbidden (auth OK, but not allowed)               │
+│    - 404 Not Found (tool not found)                         │
+│    - 429 Too Many Requests (rate limited)                   │
+│    - 500 Internal Server Error (unhandled exception)        │
+│    - 503 Service Unavailable (downstream error)             │
+│                                                             │
+│ 2. MCP PROTOCOL ERRORS (JSON-RPC)                           │
+│    - -32700: Parse error (invalid JSON)                     │
+│    - -32600: Invalid Request (malformed)                    │
+│    - -32601: Method not found (tool doesn't exist)          │
+│    - -32602: Invalid params (schema mismatch)               │
+│    - -32603: Internal error (server error)                  │
+│    - -32000 to -32099: Server error (reserved)              │
+│                                                             │
+│ 3. APPLICATION ERRORS (Custom)                              │
+│    - INJECTION_DETECTED (security violation)                │
+│    - POLICY_DENIED (OPA rejected)                           │
+│    - RATE_LIMITED (quota exceeded)                          │
+│    - TOOL_EXECUTION_FAILED (backend error)                  │
+│    - TOOL_TIMEOUT (execution timeout)                       │
+│    - ELEVATION_REQUIRED (needs PIM)                         │
+│    - USER_CONFIRMATION_REQUIRED (needs confirmation)        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 10.2 Error Handling Flow
+
+```
+EXCEPTION OCCURS
+       │
+       ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 1. EXCEPTION TYPE IDENTIFICATION                            │
+│    - AuthenticationException                                │
+│    - AuthorizationException                                 │
+│    - ValidationException                                    │
+│    - ToolExecutionException                                 │
+│    - TimeoutException                                       │
+│    - DatabaseException                                      │
+│    - NetworkException                                       │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. MAP TO HTTP STATUS CODE                                  │
+│    AuthenticationException → 401                            │
+│    AuthorizationException → 403                             │
+│    ValidationException → 400                                │
+│    RateLimitException → 429                                 │
+│    ToolNotFound → 404                                       │
+│    ToolExecution → 500                                      │
+│    Timeout → 504                                            │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. LOG ERROR                                                │
+│    - Error message                                          │
+│    - Stack trace (dev only, not in production response)     │
+│    - Context (user, tool, args)                             │
+│    - Correlation ID for tracing                             │
+│    - Severity level                                         │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. SEND ALERT (if critical)                                 │
+│    - Critical errors → PagerDuty/Slack alert                │
+│    - High error rate → Threshold alert                      │
+│    - Security violations → Security team alert              │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 5. BUILD ERROR RESPONSE                                     │
+│    Sanitize details (don't expose internal paths/IPs)       │
+│    Include correlation ID for client to reference           │
+│    Include actionable error message                         │
+│    Include documentation link (if applicable)               │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 6. RETURN TO CLIENT                                         │
+│    HTTP Status + JSON error response                        │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+          ERROR HANDLING COMPLETE
+```
+
+### 10.3 Error Response Examples
+
+**Example 1: Tool Not Found**
+```json
+HTTP 404 Not Found
+
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32601,
+    "message": "Method not found",
+    "data": {
+      "tool_requested": "invalid_tool",
+      "correlation_id": "req-abc123",
+      "available_tools": 42,
+      "similar_tools": ["create_booking", "get_booking"]
+    }
+  }
+}
+```
+
+**Example 2: Backend Service Unavailable**
+```json
+HTTP 503 Service Unavailable
+
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32603,
+    "message": "Internal error",
+    "data": {
+      "error_type": "SERVICE_UNAVAILABLE",
+      "service": "booking-service",
+      "status": "down",
+      "correlation_id": "req-abc123",
+      "retry_after_seconds": 60,
+      "documentation": "https://docs.msil.com/errors/service-unavailable"
+    }
+  }
+}
+```
+
+**Example 3: Rate Limit Exceeded**
+```json
+HTTP 429 Too Many Requests
+
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32000,
+    "message": "Rate limited",
+    "data": {
+      "error_type": "RATE_LIMITED",
+      "limit": 100,
+      "window_seconds": 60,
+      "retry_after_seconds": 45,
+      "correlation_id": "req-abc123"
+    }
+  }
+}
+```
+
+---
+
+## 11. Audit & Compliance Logging
+
+### 11.1 Audit Log Entry
+
+**File Reference**: `mcp-server/app/core/audit/logger.py`
+
+Every request (success or failure) is logged for compliance.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ AUDIT LOG ENTRY CREATION                                    │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│ Timestamp: 2026-02-02T10:30:15.123Z                        │
+│ Correlation ID: req-abc123-def456                          │
+│ Request ID: REQ-20260202-001234                            │
+│                                                             │
+│ USER CONTEXT:                                              │
+│ - User ID: developer@msil.com                              │
+│ - User Roles: [operator, viewer]                           │
+│ - User Department: dealer-operations                       │
+│ - IP Address: 10.20.30.40                                  │
+│ - Session ID: sess-xyz789                                  │
+│                                                             │
+│ REQUEST DETAILS:                                           │
+│ - Method: tools/call                                       │
+│ - Tool: create_booking                                     │
+│ - Tool Risk Level: write                                   │
+│ - Arguments: {dealer_id: DL123456, ...} (sanitized)       │
+│                                                             │
+│ SECURITY CHECKS:                                           │
+│ - Authentication: PASSED (JWT valid)                       │
+│ - Authorization: PASSED (operator role OK)                 │
+│ - Rate Limit: PASSED (45/100 used)                         │
+│ - Policy Check: PASSED (OPA approved)                      │
+│ - Input Validation: PASSED (schema OK)                     │
+│ - Confirmation: PASSED (user_confirmed=true)               │
+│                                                             │
+│ EXECUTION:                                                 │
+│ - Status: SUCCESS                                          │
+│ - Backend Service: booking-service                         │
+│ - Response Time: 1250ms                                    │
+│ - Result: {bookingId: BK123456789, status: confirmed}      │
+│                                                             │
+│ STORAGE DECISIONS:                                         │
+│ - S3 Archive: Yes (full audit log)                         │
+│ - Retention: 12 months (RFP requirement)                   │
+│ - Encryption: KMS                                          │
+│ - Classification: CONFIDENTIAL                             │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 11.2 Audit Log JSON Structure
+
+```json
+{
+  "timestamp": "2026-02-02T10:30:15.123Z",
+  "correlation_id": "req-abc123-def456",
+  "request_id": "REQ-20260202-001234",
+  "audit_level": "DETAILED",
+  "user": {
+    "id": "developer@msil.com",
+    "roles": ["operator", "viewer"],
+    "department": "dealer-operations",
+    "ip_address": "10.20.30.40",
+    "user_agent": "msil-host-app/1.0.0"
+  },
+  "request": {
+    "method": "tools/call",
+    "tool_name": "create_booking",
+    "tool_risk_level": "write",
+    "arguments_hash": "sha256:abc123...",
+    "arguments_summary": {
+      "dealer_id": "DL123456",
+      "field_count": 3
+    }
+  },
+  "security_checks": {
+    "authentication": {
+      "status": "PASSED",
+      "method": "JWT",
+      "token_issuer": "https://msil-idp.example.com"
+    },
+    "authorization": {
+      "status": "PASSED",
+      "check_type": "RBAC",
+      "roles_required": ["operator"],
+      "roles_user_has": ["operator", "viewer"]
+    },
+    "rate_limit": {
+      "status": "PASSED",
+      "tier": "standard",
+      "current_usage": 45,
+      "limit": 100
+    },
+    "policy": {
+      "status": "PASSED",
+      "engine": "OPA",
+      "evaluation_time_ms": 45
+    },
+    "input_validation": {
+      "status": "PASSED",
+      "validation_time_ms": 23
+    },
+    "confirmation": {
+      "status": "PASSED",
+      "confirmed_by_user": true
+    }
+  },
+  "execution": {
+    "status": "SUCCESS",
+    "backend_service": "booking-service",
+    "backend_url": "https://apim-dev.msil.example.com/v1/bookings",
+    "response_time_ms": 1250,
+    "response_status": 200,
+    "idempotency_used": false
+  },
+  "result": {
+    "success": true,
+    "result_hash": "sha256:def456...",
+    "result_fields": ["bookingId", "status", "createdAt"]
+  },
+  "compliance": {
+    "pii_detected_in_response": false,
+    "pii_masked": false,
+    "encryption": "AES-256-GCM",
+    "retention_days": 365
+  }
+}
+```
+
+### 11.3 Audit Log Storage
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ MULTI-LAYER AUDIT STORAGE                                   │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│ LAYER 1: REAL-TIME (Memory/Redis)                          │
+│ - Retention: Last 1 hour                                    │
+│ - Purpose: Real-time monitoring                             │
+│ - Query: Via /api/analytics endpoint                        │
+│ - Size: ~50MB (rolling)                                     │
+│                                                             │
+│ LAYER 2: RECENT (CloudWatch Logs)                          │
+│ - Retention: 30 days                                        │
+│ - Purpose: Recent debugging, incident response              │
+│ - Query: CloudWatch Logs Insights (SQL-like queries)        │
+│ - Size: ~500GB/month                                        │
+│                                                             │
+│ LAYER 3: LONG-TERM (S3 Archive)                            │
+│ - Retention: 12 months (RFP requirement)                    │
+│ - Purpose: Compliance, audits, forensics                    │
+│ - Encryption: AWS KMS (customer-managed keys)               │
+│ - Versioning: Enabled (immutable)                           │
+│ - Lifecycle: Move to Glacier after 90 days                  │
+│ - Size: ~10TB total                                         │
+│                                                             │
+│ LAYER 4: COMPLIANCE (Separate silo)                        │
+│ - Access: Restricted to compliance team                     │
+│ - Integrity: Digital signatures                             │
+│ - Segregation: Separate AWS account                         │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 12. Observability & Tracing
+
+### 12.1 Distributed Tracing
+
+**File Reference**: `mcp-server/app/core/observability/tracing.py`
+
+Every request generates a complete trace showing all components involved.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ TRACE INITIALIZATION                                        │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Generate/Extract Trace Context                              │
+│                                                             │
+│ From request headers:                                       │
+│ - traceparent: 00-abc123...-def456...-01                    │
+│ - tracestate: vendor-data                                   │
+│ - X-Correlation-ID: req-abc123                              │
+│                                                             │
+│ Or generate new:                                            │
+│ - trace_id: abc1234567890def1234567890abcdef               │
+│ - span_id: def456789abcdef                                 │
+│ - parent_span_id: (if continuation)                         │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ TRACE FLOW ACROSS COMPONENTS                                │
+│                                                             │
+│  Span: mcp_request_handler (root)                           │
+│  ├─ Span: auth_validate                                     │
+│  │  └─ Check JWT signature (local)                          │
+│  ├─ Span: authorization_check                               │
+│  │  └─ RBAC evaluation (local)                              │
+│  ├─ Span: rate_limit_check                                  │
+│  │  └─ Redis query (remote)                                 │
+│  ├─ Span: policy_evaluation                                 │
+│  │  └─ HTTP call to OPA (remote)                            │
+│  ├─ Span: tool_registry_lookup                              │
+│  │  └─ Database query (remote)                              │
+│  ├─ Span: input_validation                                  │
+│  │  └─ JSON schema validation (local)                       │
+│  └─ Span: backend_api_call                                  │
+│     └─ HTTP POST to booking-service (remote)                │
+│        ├─ Span: network_request                             │
+│        ├─ Span: backend_processing (remote)                 │
+│        └─ Span: response_parsing                            │
+│                                                             │
+│ Total trace includes:                                       │
+│ - 9+ spans                                                  │
+│ - 6 remote calls (3 via HTTP, 2 via Redis, 1 via DB)       │
+│ - Timing for each                                           │
+│ - Errors/exceptions if any                                  │
+│                                                             │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────────┐
+│ SEND TO X-RAY (OpenTelemetry)                               │
+│                                                             │
+│ POST /aws/xray (batch)                                      │
+│ {                                                           │
+│   "trace_id": "abc123...",                                  │
+│   "segments": [                                             │
+│     {                                                       │
+│       "name": "mcp_request_handler",                        │
+│       "start_time": 1706700015.123,                         │
+│       "end_time": 1706700016.373,                           │
+│       "duration": 1.25,                                     │
+│       "subsegments": [...]                                  │
+│     }                                                       │
+│   ]                                                         │
+│ }                                                           │
+│                                                             │
+│ This creates service map showing:                           │
+│ - MCP Server → OPA communication                            │
+│ - MCP Server → Redis communication                          │
+│ - MCP Server → Booking Service communication                │
+│ - Latencies between each                                    │
+│ - Error rates by route                                      │
+│                                                             │
+└────────────────┬────────────────────────────────────────────┘
+                 │
+                 ▼
+          ✅ TRACE COMPLETE
+```
+
+### 12.2 Metrics Collection
+
+```
+Metrics sent to CloudWatch every 60 seconds:
+
+1. REQUEST METRICS:
+   - mcp.requests.total (counter)
+   - mcp.requests.latency_p50, p95, p99 (histogram)
+   - mcp.requests.by_method (GET, POST, DELETE)
+   - mcp.requests.by_tool (which tools called)
+
+2. ERROR METRICS:
+   - mcp.errors.total (counter by error code)
+   - mcp.errors.auth_failures
+   - mcp.errors.rate_limit_exceeded
+   - mcp.errors.tool_not_found
+
+3. SECURITY METRICS:
+   - mcp.security.auth_passed
+   - mcp.security.auth_failed
+   - mcp.security.policy_denied
+   - mcp.security.injection_detected
+
+4. PERFORMANCE METRICS:
+   - mcp.execution.duration_ms (by tool)
+   - mcp.backend.latency_ms (to downstream services)
+   - mcp.policy_evaluation.duration_ms
+
+5. RESOURCE METRICS:
+   - mcp.redis.connections (active)
+   - mcp.db.connections (active)
+   - mcp.memory.usage_mb
+   - mcp.cpu.usage_percent
+```
+
+### 12.3 Alert Rules
+
+```
+Triggered automatically when:
+
+1. ERROR RATE > 5% (in 5-min window)
+   → Slack #mcp-alerts + PagerDuty
+
+2. LATENCY P99 > 5 seconds
+   → Email ops team
+
+3. AUTH FAILURES > 10/min
+   → Slack #mcp-security + potential attack investigation
+
+4. RATE LIMIT DENIED > 1000/hour
+   → Check if legitimate burst or DoS attack
+
+5. DOWNSTREAM SERVICE DOWN
+   → Immediate notification (may trigger failover)
+
+6. DISK USAGE > 80%
+   → Storage team notification
+
+7. AUDIT LOG WRITE FAILED
+   → Critical alert (compliance violation)
+```
+
+---
+
+## Summary: Complete Request Flow
+
+```
+REQUEST JOURNEY TIMELINE
+═══════════════════════════════════════════════════════════════
+
+1. [0ms]      Client → Server (TCP/HTTPS connection)
+2. [5ms]      CORS validation ✓
+3. [10ms]     TLS handshake complete
+4. [15ms]     Request parsing (JSON → Pydantic)
+5. [20ms]     Pydantic validation ✓
+6. [25ms]     Extract headers (Auth, Correlation ID)
+7. [30ms]     JWT signature validation ✓
+8. [35ms]     JWT claims validation ✓
+9. [40ms]     RBAC check ✓
+10. [45ms]    Tool existence check ✓
+11. [50ms]    Rate limit check (Redis) ✓
+12. [60ms]    OPA policy evaluation (HTTP) ✓
+13. [70ms]    Input validation (schema) ✓
+14. [80ms]    Custom validators ✓
+15. [90ms]    Confirmation check ✓
+16. [95ms]    Backend request preparation
+17. [100ms]   idempotency check (Redis)
+18. [110ms]   HTTP call to booking-service (30sec timeout)
+19. [1250ms]  Backend response received (1150ms latency)
+20. [1255ms]  Response validation ✓
+21. [1260ms]  Response shaping
+22. [1265ms]  PII masking check ✓
+23. [1270ms]  MCP response wrapping
+24. [1275ms]  Audit log creation
+25. [1280ms]  Audit log to S3 (async)
+26. [1285ms]  Metrics to CloudWatch (async)
+27. [1290ms]  Trace to X-Ray (async)
+28. [1295ms]  Response sent to client
+29. [1300ms]  Request complete
+
+TOTAL TIME: ~1.3 seconds
+SECURITY CHECKS: 8
+NETWORK CALLS: 3 (OPA, Redis, Backend)
+LOG ENTRIES: 3 (Structured, Audit, Trace)
+```
+
+---
+
+## Conclusion
+
+This comprehensive request lifecycle demonstrates a defense-in-depth architecture with:
+
+✅ **Multi-layer authentication** (JWT, signature verification, claims validation)  
+✅ **Fine-grained authorization** (RBAC + OPA policies)  
+✅ **Input security** (validation, sanitization, injection detection)  
+✅ **Confidentiality** (PII masking, encryption, redaction)  
+✅ **Auditability** (complete request logging, compliance storage)  
+✅ **Observability** (tracing, metrics, alerts)  
+✅ **Reliability** (error handling, idempotency, timeouts)  
+✅ **Rate limiting** (quota management per tier)  
+✅ **Compliance** (12-month retention, policy enforcement)  
+
+Every single request flows through this gauntlet of security and compliance checks before touching backend services.
+
+---
+
+*Document prepared for architectural review. Last updated: February 2, 2026*

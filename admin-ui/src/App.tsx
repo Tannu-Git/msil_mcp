@@ -6,9 +6,13 @@ import { Tools } from './pages/Tools'
 import { Import } from './pages/Import'
 import Login from './pages/Login'
 import Policies from './pages/Policies'
+import Users from './pages/Users'
+import OpaPolicies from './pages/OpaPolicies'
+import TestAuthorization from './pages/TestAuthorization'
 import AuditLogs from './pages/AuditLogs'
 import Settings from './pages/Settings'
 import ServiceBookingWizard from './pages/ServiceBookingWizard'
+import Exposure from './pages/Exposure'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -53,6 +57,10 @@ function AppRoutes() {
                     <Route path="/tools" element={<Tools />} />
                     <Route path="/import" element={<Import />} />
                     <Route path="/policies" element={<Policies />} />
+                    <Route path="/users" element={<Users />} />
+                    <Route path="/opa-policies" element={<OpaPolicies />} />
+                    <Route path="/test-authz" element={<TestAuthorization />} />
+                    <Route path="/exposure" element={<Exposure />} />
                     <Route path="/audit-logs" element={<AuditLogs />} />
                     <Route path="/settings" element={<Settings />} />
                     <Route path="/service-booking" element={<ServiceBookingWizard />} />

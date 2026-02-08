@@ -1,7 +1,7 @@
 # Deployment Architecture
 
-**Document Version**: 2.1  
-**Last Updated**: February 1, 2026  
+**Document Version**: 2.2  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 > **📋 Note**: This deployment architecture supports any OIDC-compliant Identity Provider (MSIL IdP). Authentication endpoints and JWKS URIs are configurable via environment variables.
@@ -11,6 +11,8 @@
 ## 1. Overview
 
 This document describes the deployment architecture for the MSIL MCP Platform, including containerization, Kubernetes orchestration, CI/CD pipelines, environment segregation, and disaster recovery strategies.
+
+**Phase 3 Addition**: Exposure Governance introduces a configurable cache TTL via environment variable `EXPOSURE_CACHE_TTL_SECONDS` (default 3600 seconds).
 
 ---
 

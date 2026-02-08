@@ -33,11 +33,12 @@ export function Import() {
 
     setApproving(true)
     try {
-      const response = await fetch('http://localhost:8000/api/admin/openapi/approve', {
+      const response = await fetch('/api/admin/openapi/approve', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-API-Key': 'msil-mcp-dev-key-2026'
+          'x-api-key': 'msil-mcp-dev-key-2026',
+          'Authorization': 'Bearer mock-jwt-token'
         },
         body: JSON.stringify({
           spec_id: uploadResult.spec_id,

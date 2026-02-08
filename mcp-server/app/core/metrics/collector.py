@@ -5,7 +5,7 @@ Tracks tool execution metrics for analytics and monitoring
 import logging
 import uuid
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,8 @@ class MetricsCollector:
     
     def __init__(self):
         self._execution_log: list[Dict[str, Any]] = []
+        self._conversation_log: list[Dict[str, Any]] = []
+        self._total_conversations = 0
     
     @asynccontextmanager
     async def track_execution(self, tool_name: str, arguments: Dict[str, Any]):
@@ -138,6 +140,69 @@ class MetricsCollector:
             "avg_response_time": avg_duration
         }
     
+    def log_conversation_start(self, session_id: str, user_id: Optional[str] = None) -> None:
+        """
+        Log the start of a new conversation
+        
+        Args:
+            session_id: Unique session identifier
+            user_id: User identifier (optional)
+        """
+        conversation = {
+            "session_id": session_id,
+            "user_id": user_id or "anonymous",
+            "started_at": datetime.utcnow().isoformat(),
+            "message_count": 0
+        }
+        self._conversation_log.append(conversation)
+        self._total_conversations += 1
+        logger.info(f"Conversation started: {session_id}")
+    
+    def get_conversation_count(self) -> int:
+        """Get total number of conversations tracked"""
+        return self._total_conversations
+    
+    def get_metrics_by_timeframe(self, hours: int = 24) -> Dict[str, Any]:
+        """
+        Get metrics filtered by time window
+        
+        Args:
+            hours: Number of hours to look back (default 24)
+            
+        Returns:
+            Dictionary with metrics for the time window
+        """
+        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+        
+        recent_executions = []
+        for e in self._execution_log:
+            try:
+                exec_time = datetime.fromisoformat(e["started_at"].replace("Z", "+00:00"))
+                if exec_time >= cutoff_time:
+                    recent_executions.append(e)
+            except (ValueError, KeyError):
+                continue
+        
+        if not recent_executions:
+            return {
+                "total_requests": 0,
+                "success_rate": 0.0,
+                "avg_response_time": 0,
+                "timeframe_hours": hours
+            }
+        
+        total = len(recent_executions)
+        successful = len([e for e in recent_executions if e["status"] == "success"])
+        durations = [e["duration_ms"] for e in recent_executions if "duration_ms" in e]
+        avg_duration = sum(durations) // len(durations) if durations else 0
+        
+        return {
+            "total_requests": total,
+            "success_rate": round((successful / total) * 100, 1) if total > 0 else 0.0,
+            "avg_response_time": avg_duration,
+            "timeframe_hours": hours
+        }
+    
     def get_recent_executions(self, limit: int = 50) -> list[Dict[str, Any]]:
         """Get recent executions"""
         return sorted(
@@ -145,10 +210,24 @@ class MetricsCollector:
             key=lambda e: e["started_at"],
             reverse=True
         )[:limit]
+
+    def get_all_executions(self) -> list[Dict[str, Any]]:
+        """Get all executions (for analytics aggregation)."""
+        return list(self._execution_log)
+    
+    def get_recent_conversations(self, limit: int = 20) -> list[Dict[str, Any]]:
+        """Get recent conversations"""
+        return sorted(
+            self._conversation_log,
+            key=lambda c: c["started_at"],
+            reverse=True
+        )[:limit]
     
     def clear(self):
         """Clear all metrics (for testing)"""
         self._execution_log.clear()
+        self._conversation_log.clear()
+        self._total_conversations = 0
         logger.info("Metrics cleared")
 
 

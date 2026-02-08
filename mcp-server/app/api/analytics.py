@@ -24,12 +24,17 @@ async def get_metrics_summary() -> Dict[str, Any]:
     
     try:
         # Get tools from registry
-        all_tools = tool_registry.list_tools()
+        all_tools = await tool_registry.list_tools(active_only=False)
         total_tools = len(all_tools)
         active_tools = sum(1 for tool in all_tools if tool.is_active)
         
         # Get real metrics from collector
         real_metrics = metrics_collector.get_summary_metrics()
+        
+        # Get time-filtered metrics
+        last_hour_metrics = metrics_collector.get_metrics_by_timeframe(hours=1)
+        last_24h_metrics = metrics_collector.get_metrics_by_timeframe(hours=24)
+        last_7d_metrics = metrics_collector.get_metrics_by_timeframe(hours=168)
         
         metrics = {
             "total_tools": total_tools,
@@ -37,15 +42,15 @@ async def get_metrics_summary() -> Dict[str, Any]:
             "total_requests": real_metrics["total_requests"],
             "success_rate": real_metrics["success_rate"],
             "avg_response_time": int(real_metrics["avg_response_time"]),  # ms
-            "total_conversations": 0,  # TODO: Track conversations
+            "total_conversations": metrics_collector.get_conversation_count(),
             "tools_by_status": {
                 "active": active_tools,
                 "inactive": total_tools - active_tools
             },
             "recent_activity": {
-                "last_hour": 0,  # TODO: Time-filtered metrics
-                "last_24_hours": real_metrics["total_requests"],
-                "last_7_days": real_metrics["total_requests"]
+                "last_hour": last_hour_metrics["total_requests"],
+                "last_24_hours": last_24h_metrics["total_requests"],
+                "last_7_days": last_7d_metrics["total_requests"]
             }
         }
         
@@ -103,48 +108,118 @@ async def get_requests_timeline(
     days: int = Query(default=7, le=30)
 ) -> List[Dict[str, Any]]:
     """Get request timeline data for charts"""
-    
-    # Mock timeline data
     timeline = []
+    executions = metrics_collector.get_all_executions()
     base_date = datetime.now() - timedelta(days=days)
-    
+
+    counts = {}
+    for exec_item in executions:
+        started_at = exec_item.get("started_at")
+        if not started_at:
+            continue
+        try:
+            ts = datetime.fromisoformat(started_at)
+        except ValueError:
+            continue
+        if ts < base_date:
+            continue
+        key = ts.strftime("%Y-%m-%d")
+        if key not in counts:
+            counts[key] = {"requests": 0, "success": 0, "errors": 0}
+        counts[key]["requests"] += 1
+        if exec_item.get("status") == "success":
+            counts[key]["success"] += 1
+        else:
+            counts[key]["errors"] += 1
+
     for i in range(days):
         date = base_date + timedelta(days=i)
+        key = date.strftime("%Y-%m-%d")
+        day_counts = counts.get(key, {"requests": 0, "success": 0, "errors": 0})
         timeline.append({
-            "date": date.strftime("%Y-%m-%d"),
-            "requests": 100 + (i * 20),  # Mock
-            "success": 95 + (i * 19),  # Mock
-            "errors": 5 + i  # Mock
+            "date": key,
+            "requests": day_counts["requests"],
+            "success": day_counts["success"],
+            "errors": day_counts["errors"]
         })
-    
+
     return timeline
 
 
 @router.get("/metrics/performance")
 async def get_performance_metrics() -> Dict[str, Any]:
     """Get performance metrics"""
-    
+    executions = metrics_collector.get_all_executions()
+    durations = [e.get("duration_ms", 0) for e in executions if e.get("duration_ms") is not None]
+    durations.sort()
+
+    def _percentile(values: list[int], pct: int) -> int:
+        if not values:
+            return 0
+        idx = int(round((pct / 100) * (len(values) - 1)))
+        return int(values[max(0, min(idx, len(values) - 1))])
+
+    total = len(executions)
+    failed = len([e for e in executions if e.get("status") == "failed"])
+    error_rate = round((failed / total) * 100, 1) if total > 0 else 0.0
+
+    # Throughput over last 60 seconds
+    now = datetime.utcnow()
+    window_start = now - timedelta(seconds=60)
+    recent = 0
+    for exec_item in executions:
+        started_at = exec_item.get("started_at")
+        if not started_at:
+            continue
+        try:
+            ts = datetime.fromisoformat(started_at)
+        except ValueError:
+            continue
+        if ts >= window_start:
+            recent += 1
+
     return {
         "response_time": {
-            "p50": 85,  # Mock (ms)
-            "p95": 145,  # Mock (ms)
-            "p99": 250,  # Mock (ms)
-            "max": 450  # Mock (ms)
+            "p50": _percentile(durations, 50),
+            "p95": _percentile(durations, 95),
+            "p99": _percentile(durations, 99),
+            "max": int(durations[-1]) if durations else 0
         },
         "throughput": {
-            "requests_per_second": 12.5,  # Mock
-            "concurrent_connections": 8  # Mock
+            "requests_per_second": round(recent / 60, 2),
+            "concurrent_connections": 0
         },
         "errors": {
-            "total": 31,  # Mock
-            "rate": 1.5,  # Mock (%)
+            "total": failed,
+            "rate": error_rate,
             "by_type": {
-                "timeout": 12,
-                "validation": 10,
-                "server_error": 9
+                "failed": failed
             }
         }
     }
+
+
+@router.get("/metrics/recent-activity")
+async def get_recent_activity(
+    limit: int = Query(default=10, le=50)
+) -> List[Dict[str, Any]]:
+    """Get recent tool executions for dashboard activity feed"""
+
+    try:
+        recent = metrics_collector.get_recent_executions(limit=limit)
+        return [
+            {
+                "execution_id": item.get("execution_id"),
+                "tool_name": item.get("tool_name"),
+                "status": item.get("status"),
+                "started_at": item.get("started_at"),
+                "duration_ms": item.get("duration_ms")
+            }
+            for item in recent
+        ]
+    except Exception as e:
+        logger.error(f"Failed to fetch recent activity: {e}")
+        return []
 
 
 @router.get("/tools/list")
@@ -156,7 +231,7 @@ async def get_tools_list(
     
     try:
         # Get tools from registry
-        all_tools = tool_registry.list_tools()
+        all_tools = await tool_registry.list_tools(active_only=False)
         total = len(all_tools)
         
         # Paginate
@@ -175,6 +250,7 @@ async def get_tools_list(
                 "created_at": tool.created_at.isoformat() if tool.created_at else None,
                 "updated_at": tool.updated_at.isoformat() if tool.updated_at else None,
                 "category": tool.category,
+                "bundle_name": tool.bundle_name,
                 "tags": []  # Not in current Tool model
             })
         
@@ -202,7 +278,7 @@ async def get_tool_details(
     """Get detailed information about a specific tool"""
     
     try:
-        tool = tool_registry.get_tool(tool_name)
+        tool = await tool_registry.get_tool(tool_name)
         
         if not tool:
             return {"error": "Tool not found"}
@@ -222,6 +298,7 @@ async def get_tool_details(
             "created_at": tool.created_at.isoformat() if tool.created_at else None,
             "updated_at": tool.updated_at.isoformat() if tool.updated_at else None,
             "category": tool.category,
+            "bundle_name": tool.bundle_name,
             "tags": [],
             "usage_stats": {
                 "total_calls": tool_metrics["total_calls"],

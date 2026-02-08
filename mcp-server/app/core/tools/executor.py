@@ -5,12 +5,15 @@ import logging
 import time
 import json
 from typing import Any, Dict, Optional
+from datetime import datetime
 import httpx
 from circuitbreaker import circuit
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from app.config import settings
 from app.core.tools.registry import tool_registry
+from app.core.exposure.manager import exposure_manager
+from app.core.exceptions import ToolNotFoundError, ToolNotExposedError, AuthorizationError, PolicyError
 from app.core.metrics.collector import metrics_collector
 from app.core.idempotency.store import IdempotencyStore
 
@@ -47,14 +50,24 @@ class ToolExecutor:
         }
         
         if settings.API_GATEWAY_MODE == "msil_apim":
+            # MSIL APIM requires dual authentication
             if settings.MSIL_APIM_SUBSCRIPTION_KEY:
                 headers["Ocp-Apim-Subscription-Key"] = settings.MSIL_APIM_SUBSCRIPTION_KEY
-            # Add OAuth token if available (future enhancement)
+            # Add x-api-key for dual auth
+            headers["x-api-key"] = settings.API_KEY
+            # Add OAuth token if available
+            headers["Authorization"] = f"Bearer {self._get_jwt_token()}"
         else:
-            # Mock API - simple API key
-            headers["X-API-Key"] = settings.API_KEY
+            # Mock API - dual authentication (x-api-key + Bearer token)
+            headers["x-api-key"] = settings.API_KEY
+            headers["Authorization"] = f"Bearer {self._get_jwt_token()}"
         
         return headers
+    
+    def _get_jwt_token(self) -> str:
+        """Generate mock JWT token for demo"""
+        # In production, this would be obtained from OAuth2 provider
+        return "mock-jwt-token-" + str(datetime.utcnow().timestamp())
     
     async def execute(
         self,
@@ -62,10 +75,16 @@ class ToolExecutor:
         arguments: Dict[str, Any],
         correlation_id: str,
         idempotency_key: Optional[str] = None,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        user_roles: Optional[list] = None,
+        is_elevated: bool = False
     ) -> Dict[str, Any]:
         """
         Execute a tool with given arguments
+        
+        Includes PHASE 1 NEW: Exposure validation (Layer B defense-in-depth)
+        Before authorization check, verify tool is in user's exposure set.
+        Includes PHASE 2 NEW: Risk enforcement (elevation, confirmation, rate limiting)
         
         Args:
             tool_name: Name of the tool to execute
@@ -73,6 +92,8 @@ class ToolExecutor:
             correlation_id: Request correlation ID
             idempotency_key: Optional idempotency key for write operations
             user_id: Optional user ID for idempotency isolation
+            user_roles: Optional list of user roles for exposure check
+            is_elevated: Whether user has elevation privileges
             
         Returns:
             Tool execution result
@@ -80,7 +101,35 @@ class ToolExecutor:
         # Get tool definition first to check if it's a write operation
         tool = await tool_registry.get_tool(tool_name)
         if not tool:
-            raise ValueError(f"Tool not found: {tool_name}")
+            logger.error(f"[{correlation_id}] Tool not found: {tool_name}")
+            raise ToolNotFoundError(f"Tool not found: {tool_name}")
+        
+        # PHASE 1 NEW: Check exposure (Layer B - defense-in-depth)
+        # Even if exposure filter in tools/list breaks, this prevents execution
+        if user_id and user_roles:
+            exposed_tools = await exposure_manager.get_exposed_tools_for_user(
+                user_id, user_roles
+            )
+            
+            if not exposure_manager.is_tool_exposed(tool.name, tool.bundle_name, exposed_tools):
+                logger.warning(
+                    f"[{correlation_id}] Tool {tool_name} not in user's exposure set "
+                    f"(user={user_id}, bundle={tool.bundle_name})"
+                )
+                raise ToolNotExposedError(
+                    f"Tool '{tool_name}' is not available in your tool catalog"
+                )
+
+        # PHASE 2 NEW: Enforce tool risk requirements
+        if tool.requires_elevation and not is_elevated:
+            raise AuthorizationError(
+                f"Tool '{tool_name}' requires elevation. Request elevation to proceed."
+            )
+
+        if tool.requires_confirmation and not arguments.get("user_confirmed", False):
+            raise PolicyError(
+                f"Tool '{tool_name}' requires explicit confirmation via user_confirmed=true."
+            )
         
         # Check idempotency for write operations
         is_write_operation = tool.http_method.upper() in ["POST", "PUT", "DELETE", "PATCH"]

@@ -1,7 +1,7 @@
 # Support & SLA Management
 
-**Document Version**: 2.0  
-**Last Updated**: January 31, 2026  
+**Document Version**: 2.1  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
@@ -115,6 +115,29 @@ Allowed Downtime: 43.8 minutes/month (99.9%)
 | L2 Application | Extended hours | Mon-Sat 08:00-20:00 IST | Teams/Phone |
 | L3 Engineering | On-call | 24/7 for P1/P2 | PagerDuty |
 | Security | On-call | 24/7 | PagerDuty |
+
+---
+
+## 3. Exposure Governance Support Playbook (Phase 3)
+
+### 3.1 Common Exposure Issues
+
+| Symptom | Likely Cause | Resolution |
+|---------|--------------|------------|
+| Missing tools in tools/list | Role lacks exposure permission | Update role exposure permissions via admin UI/API |
+| Tool visible but not executable | Authorization (Layer A) denial | Check RBAC/OPA policies and risk level rules |
+| Recently updated permissions not reflected | Cache TTL not expired or change not saved | Verify admin API response and audit log; restart mcp-server if needed |
+
+### 3.2 Quick Checks
+
+- Confirm role permissions: `GET /admin/exposure/roles/{role}`
+- Confirm bundles list: `GET /admin/exposure/bundles`
+- Confirm tools/list output matches exposure configuration
+
+### 3.3 Escalation Notes
+
+- Exposure changes are audited; include audit log IDs in escalation tickets.
+- Security team must approve exposure changes that grant `expose:all`.
 
 ---
 

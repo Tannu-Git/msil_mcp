@@ -1,7 +1,7 @@
 # Team Structure & Governance
 
-**Document Version**: 2.0  
-**Last Updated**: January 31, 2026  
+**Document Version**: 2.1  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
@@ -52,7 +52,7 @@
 | **Backend Developer** | 2 | MCP server development, testing |
 | **Frontend Developer** | 1 | React development (Admin Portal, Chat UI) |
 | **DevOps Engineer** | 1 | CI/CD, Kubernetes, AWS infrastructure |
-| **Security Engineer** | 1 | Security reviews, compliance, penetration testing |
+| **Security Engineer** | 1 | Security reviews, compliance, exposure governance oversight, penetration testing |
 | **QA Engineer** | 1 | Test automation, quality assurance |
 | **Project Manager** | 1 | Project coordination, stakeholder management |
 | **Total** | **11** | |

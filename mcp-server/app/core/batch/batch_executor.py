@@ -51,7 +51,10 @@ class BatchExecutor:
     async def execute_batch(
         self,
         requests: List[BatchRequest],
-        correlation_id: str
+        correlation_id: str,
+        user_id: Optional[str] = None,
+        user_roles: Optional[list] = None,
+        is_elevated: bool = False
     ) -> List[BatchResult]:
         """
         Execute batch of tool requests in parallel
@@ -71,7 +74,7 @@ class BatchExecutor:
         
         # Execute all requests in parallel with concurrency limit
         tasks = [
-            self._execute_single(request, correlation_id)
+            self._execute_single(request, correlation_id, user_id, user_roles, is_elevated)
             for request in requests
         ]
         
@@ -103,7 +106,10 @@ class BatchExecutor:
     async def _execute_single(
         self,
         request: BatchRequest,
-        correlation_id: str
+        correlation_id: str,
+        user_id: Optional[str],
+        user_roles: Optional[list],
+        is_elevated: bool
     ) -> BatchResult:
         """Execute single tool request with semaphore"""
         async with self._semaphore:
@@ -118,7 +124,10 @@ class BatchExecutor:
                 result = await self.tool_executor.execute(
                     tool_name=request.tool_name,
                     arguments=request.arguments,
-                    correlation_id=f"{correlation_id}:batch:{request.request_id}"
+                    correlation_id=f"{correlation_id}:batch:{request.request_id}",
+                    user_id=user_id,
+                    user_roles=user_roles,
+                    is_elevated=is_elevated
                 )
                 
                 execution_time = int((time.time() - start_time) * 1000)
@@ -150,6 +159,9 @@ class BatchExecutor:
         self,
         requests: List[BatchRequest],
         correlation_id: str,
+        user_id: Optional[str] = None,
+        user_roles: Optional[list] = None,
+        is_elevated: bool = False,
         stop_on_error: bool = False
     ) -> List[BatchResult]:
         """
@@ -166,7 +178,13 @@ class BatchExecutor:
         results = []
         
         for request in requests:
-            result = await self._execute_single(request, correlation_id)
+            result = await self._execute_single(
+                request,
+                correlation_id,
+                user_id,
+                user_roles,
+                is_elevated
+            )
             results.append(result)
             
             # Stop if error and stop_on_error is True

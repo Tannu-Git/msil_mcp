@@ -39,6 +39,7 @@ class ToolPreview(BaseModel):
     display_name: str
     description: str
     category: str
+    bundle_name: Optional[str] = None
     api_endpoint: str
     http_method: str
     input_schema: Dict[str, Any]
@@ -98,7 +99,8 @@ async def upload_openapi_spec(
         metadata = parser.parse(content_str, format=file_format)
         
         # Generate tools
-        tools = parser.generate_tools(category=category, bundle_name=bundle_name)
+        effective_bundle_name = bundle_name or metadata.get("title") or file.filename
+        tools = parser.generate_tools(category=category, bundle_name=effective_bundle_name)
         valid_tools, errors = parser.validate_tools(tools)
         
         # Generate spec ID
@@ -160,7 +162,8 @@ async def import_from_url(
         # Parse
         parser = OpenAPIParser()
         metadata = parser.parse(content, format=file_format)
-        tools = parser.generate_tools(category=category, bundle_name=bundle_name)
+        effective_bundle_name = bundle_name or metadata.get("title") or url
+        tools = parser.generate_tools(category=category, bundle_name=effective_bundle_name)
         valid_tools, errors = parser.validate_tools(tools)
         
         # Store
@@ -261,6 +264,7 @@ async def approve_and_register_tools(request: ApproveToolsRequest) -> JSONRespon
                     display_name=tool_data["display_name"],
                     description=tool_data["description"],
                     category=tool_data["category"],
+                    bundle_name=tool_data.get("bundle_name"),
                     api_endpoint=tool_data["api_endpoint"],
                     http_method=tool_data["http_method"],
                     input_schema=tool_data["input_schema"],

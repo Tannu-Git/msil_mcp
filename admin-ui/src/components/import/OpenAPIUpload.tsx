@@ -27,10 +27,11 @@ export function OpenAPIUpload({ onUploadSuccess }: OpenAPIUploadProps) {
         formData.append('bundle_name', bundleName)
       }
 
-      const response = await fetch('http://localhost:8000/api/admin/openapi/upload', {
+      const response = await fetch('/api/admin/openapi/upload', {
         method: 'POST',
         headers: {
-          'X-API-Key': 'msil-mcp-dev-key-2026'
+          'x-api-key': 'msil-mcp-dev-key-2026',
+          'Authorization': 'Bearer mock-jwt-token'
         },
         body: formData
       })
@@ -65,10 +66,11 @@ export function OpenAPIUpload({ onUploadSuccess }: OpenAPIUploadProps) {
         ...(bundleName && { bundle_name: bundleName })
       })
 
-      const response = await fetch(`http://localhost:8000/api/admin/openapi/import-url?${params}`, {
+      const response = await fetch(`/api/admin/openapi/import-url?${params}`, {
         method: 'POST',
         headers: {
-          'X-API-Key': 'msil-mcp-dev-key-2026'
+          'x-api-key': 'msil-mcp-dev-key-2026',
+          'Authorization': 'Bearer mock-jwt-token'
         }
       })
 

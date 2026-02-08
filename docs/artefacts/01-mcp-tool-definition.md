@@ -1,7 +1,7 @@
 # MCP Tool Definition Artefacts
 
-**Document Version**: 2.1  
-**Last Updated**: February 1, 2026  
+**Document Version**: 2.2  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
@@ -43,6 +43,12 @@ This document describes the MCP Tool definition format, auto-derivation from Ope
       "minLength": 10,
       "maxLength": 500,
       "description": "Clear description for LLM understanding"
+    },
+    "bundle_name": {
+      "type": "string",
+      "maxLength": 255,
+      "description": "Logical bundle grouping for Exposure Governance",
+      "examples": ["customer-service", "data-analysis"]
     },
     "version": {
       "type": "string",

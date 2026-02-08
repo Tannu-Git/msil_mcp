@@ -1,4 +1,4 @@
-import { Wrench, ExternalLink, CheckCircle, XCircle, MoreVertical, Copy, Edit, Trash2 } from 'lucide-react'
+import { Wrench, ExternalLink, CheckCircle, XCircle, Copy, Edit, Power, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface Tool {
@@ -6,6 +6,7 @@ interface Tool {
   name: string
   description: string
   category: string
+  bundle_name?: string
   api_endpoint: string
   http_method: string
   is_active: boolean
@@ -16,9 +17,12 @@ interface Tool {
 
 interface ToolListProps {
   tools: Tool[]
+  onEdit?: (tool: Tool) => void
+  onToggleActive?: (tool: Tool) => void
+  onDelete?: (tool: Tool) => void
 }
 
-export function ToolList({ tools }: ToolListProps) {
+export function ToolList({ tools, onEdit, onToggleActive, onDelete }: ToolListProps) {
   const methodColors: Record<string, string> = {
     GET: 'bg-emerald-100 text-emerald-700 border border-emerald-200',
     POST: 'bg-blue-100 text-blue-700 border border-blue-200',
@@ -92,6 +96,11 @@ export function ToolList({ tools }: ToolListProps) {
                       {tool.category}
                     </span>
                   )}
+                  {tool.bundle_name && (
+                    <span className="text-xs text-blue-600 bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-100">
+                      Toolkit: {tool.bundle_name}
+                    </span>
+                  )}
                   {tool.tags && tool.tags.length > 0 && tool.tags.map((tag, i) => (
                     <span key={i} className="text-xs text-blue-600 bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-100">
                       {tag}
@@ -103,14 +112,38 @@ export function ToolList({ tools }: ToolListProps) {
             
             {/* Actions */}
             <div className="flex-shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Copy endpoint">
+              <button
+                className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                title="Copy endpoint"
+                onClick={() => navigator.clipboard.writeText(tool.api_endpoint)}
+              >
                 <Copy className="w-4 h-4" />
               </button>
-              <button className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Edit tool">
+              <button
+                className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                title="Edit tool"
+                onClick={() => onEdit?.(tool)}
+              >
                 <Edit className="w-4 h-4" />
               </button>
-              <button className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="View details">
-                <ExternalLink className="w-4 h-4" />
+              <button
+                className={cn(
+                  "p-2 rounded-lg transition-colors",
+                  tool.is_active
+                    ? "text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+                    : "text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+                )}
+                title={tool.is_active ? "Deactivate tool" : "Activate tool"}
+                onClick={() => onToggleActive?.(tool)}
+              >
+                <Power className="w-4 h-4" />
+              </button>
+              <button
+                className="p-2 text-red-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                title="Delete tool"
+                onClick={() => onDelete?.(tool)}
+              >
+                <Trash2 className="w-4 h-4" />
               </button>
             </div>
           </div>

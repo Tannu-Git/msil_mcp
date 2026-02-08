@@ -1,7 +1,7 @@
 # High-Level Architecture
 
-**Document Version**: 2.1  
-**Last Updated**: February 1, 2026  
+**Document Version**: 2.2  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
@@ -9,6 +9,8 @@
 ## 1. Executive Summary
 
 The MSIL MCP (Model Context Protocol) Server provides a secure, governed bridge between Large Language Models (LLMs) and Maruti Suzuki's enterprise APIs. This document presents the logical architecture view showing the Composite MCP Server topology, integration with MSIL API Manager, and governance components.
+
+**Phase 1-3 Addition**: Exposure Governance (Layer B) controls tool visibility by role. It is managed via the Admin Portal and enforced in the MCP tools/list and tools/call flows.
 
 **Important Architecture Note**:
 > The **Host/Agent application** (with embedded MCP Client) communicates with the MCP Server using the MCP protocol. The **LLM** (e.g., GPT-4, Claude) **only decides which tool to call** based on the tool descriptions—it does **not** directly speak MCP. The security and governance responsibility lies with the Host application and MCP Server.

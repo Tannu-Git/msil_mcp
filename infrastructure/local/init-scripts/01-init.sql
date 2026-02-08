@@ -14,6 +14,7 @@ CREATE TABLE tools (
     display_name VARCHAR(255) NOT NULL,
     description TEXT,
     category VARCHAR(100),
+    bundle_name VARCHAR(255),
     api_endpoint VARCHAR(500) NOT NULL,
     http_method VARCHAR(10) NOT NULL,
     input_schema JSONB NOT NULL,
@@ -29,6 +30,7 @@ CREATE TABLE tools (
 -- Index for tool lookups
 CREATE INDEX idx_tools_name ON tools(name);
 CREATE INDEX idx_tools_category ON tools(category);
+CREATE INDEX idx_tools_bundle ON tools(bundle_name);
 CREATE INDEX idx_tools_active ON tools(is_active);
 
 -- ============================================
@@ -83,6 +85,66 @@ CREATE INDEX idx_executions_correlation ON tool_executions(correlation_id);
 CREATE INDEX idx_executions_tool ON tool_executions(tool_name);
 CREATE INDEX idx_executions_status ON tool_executions(status);
 CREATE INDEX idx_executions_created ON tool_executions(created_at);
+
+-- ============================================
+-- OPENAPI SPECS (Persisted Imports)
+-- ============================================
+CREATE TABLE openapi_specs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL,
+    version VARCHAR(50),
+    description TEXT,
+    source_url TEXT,
+    file_name VARCHAR(255),
+    format VARCHAR(20) NOT NULL,
+    content TEXT NOT NULL,
+    uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(50) DEFAULT 'parsed'
+);
+
+CREATE INDEX idx_openapi_specs_name ON openapi_specs(name);
+CREATE INDEX idx_openapi_specs_status ON openapi_specs(status);
+CREATE INDEX idx_openapi_specs_uploaded ON openapi_specs(uploaded_at);
+
+CREATE TABLE openapi_spec_tools (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    spec_id UUID NOT NULL REFERENCES openapi_specs(id) ON DELETE CASCADE,
+    tool_id UUID,
+    name VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255) NOT NULL,
+    description TEXT,
+    category VARCHAR(100),
+    bundle_name VARCHAR(255),
+    api_endpoint VARCHAR(500) NOT NULL,
+    http_method VARCHAR(10) NOT NULL,
+    input_schema JSONB NOT NULL,
+    output_schema JSONB,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_openapi_tools_spec ON openapi_spec_tools(spec_id);
+CREATE INDEX idx_openapi_tools_name ON openapi_spec_tools(name);
+CREATE INDEX idx_openapi_tools_bundle ON openapi_spec_tools(bundle_name);
+
+-- ============================================
+-- POLICY ROLES & PERMISSIONS
+-- ============================================
+CREATE TABLE policy_roles (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(100) NOT NULL UNIQUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE policy_role_permissions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    role_id UUID NOT NULL REFERENCES policy_roles(id) ON DELETE CASCADE,
+    permission VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_policy_roles_name ON policy_roles(name);
+CREATE INDEX idx_policy_role_permissions_role ON policy_role_permissions(role_id);
 
 -- ============================================
 -- CHAT SESSIONS TABLE

@@ -1,7 +1,7 @@
 # Infrastructure Bill of Materials (BOM)
 
-**Document Version**: 2.0  
-**Last Updated**: January 31, 2026  
+**Document Version**: 2.1  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
@@ -62,6 +62,8 @@
 | **ElastiCache Redis** | Production | cache.r6g.large (2 nodes) | ₹18,000 |
 | | Cluster Mode | Enabled with 2 shards | Included |
 | **ElastiCache Redis** | Staging | cache.r6g.medium (1 node) | ₹6,000 |
+
+**Phase 1-3 Note**: Exposure Governance introduced two new tables (`policy_roles`, `policy_role_permissions`) and indexes for role-based tool visibility. No additional infrastructure capacity is required beyond existing PostgreSQL sizing.
 
 ### 1.3 Networking Resources
 

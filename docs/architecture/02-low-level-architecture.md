@@ -1,14 +1,14 @@
 # Low-Level Technical Architecture
 
-**Document Version**: 2.1  
-**Last Updated**: February 1, 2026  
+**Document Version**: 2.2  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
 
 ## 1. Overview
 
-This document provides detailed component-level design including the tool-definition layer, routing engine, validation modules, caching strategies, and observability stack.
+This document provides detailed component-level design including the tool-definition layer, routing engine, validation modules, caching strategies, Exposure Governance, and observability stack.
 
 **Important**: The MCP Server communicates with **Host/Agent applications** (which embed an MCP Client). The **LLM only decides which tool to call**—it does not speak MCP protocol directly. Security responsibility lies with the Host and MCP Server.
 
@@ -119,6 +119,21 @@ This document provides detailed component-level design including the tool-defini
 │                                                                                         │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### 2.2 Exposure Governance Service (Layer B)
+
+**Purpose**: Controls tool visibility based on role permissions before authorization checks.
+
+**Key Components**:
+- **ExposureManager**: `mcp-server/app/core/exposure/manager.py`
+- **Admin Exposure APIs**: `mcp-server/app/api/admin.py`
+- **Admin UI**: `admin-ui/src/pages/Exposure.tsx`
+
+**Responsibilities**:
+- Parse exposure permissions (`expose:all`, `expose:bundle:*`, `expose:tool:*`)
+- Filter tools in tools/list
+- Validate exposure in tools/call (defense-in-depth)
+- Cache exposure results with TTL (default 3600 seconds)
 
 ---
 

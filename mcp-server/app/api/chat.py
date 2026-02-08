@@ -14,6 +14,14 @@ from app.config import settings
 from app.core.llm.openai_client import openai_client
 from app.core.tools.registry import tool_registry
 from app.core.tools.executor import tool_executor
+from app.core.exposure.manager import exposure_manager
+from app.core.policy.engine import policy_engine
+from app.core.policy.risk_policy import risk_policy_manager
+from app.core.cache.rate_limiter import rate_limiter
+from app.core.metrics.collector import metrics_collector
+from app.core.audit import audit_service
+from app.core.request_context import RequestContext, get_request_context
+from app.core.exceptions import AuthorizationError, PolicyError
 from app.db.database import get_db
 # from app.services.session_service import SessionService  # TODO: Implement DB models first
 
@@ -55,20 +63,39 @@ class ChatResponse(BaseModel):
 @router.post("/send")
 async def send_message(
     request: ChatRequest,
+    context: RequestContext = Depends(get_request_context),
     x_correlation_id: Optional[str] = Header(None, alias="X-Correlation-ID")
 ) -> ChatResponse:
     """
     Send a chat message and get AI response
     Handles tool discovery and execution automatically
     """
-    correlation_id = x_correlation_id or str(uuid.uuid4())
+    correlation_id = x_correlation_id or context.correlation_id or str(uuid.uuid4())
     session_id = request.session_id or str(uuid.uuid4())
+    
+    # Track conversation start
+    is_new_conversation = not request.session_id
+    if is_new_conversation:
+        metrics_collector.log_conversation_start(session_id, context.user_id)
     
     logger.info(f"[{correlation_id}] Chat request: {request.message[:100]}...")
     
     try:
-        # Get available tools for the LLM
+        # Get available tools for the LLM, filtered by exposure and policy
         tools = await tool_registry.list_tools()
+        tools = await exposure_manager.filter_tools(
+            tools, context.user_id or "anonymous", context.roles
+        )
+        policy_filtered = []
+        for tool in tools:
+            decision = await policy_engine.evaluate(
+                action="read",
+                resource=tool.name,
+                context={"roles": context.roles, "user_id": context.user_id, "tool": tool}
+            )
+            if decision.allowed:
+                policy_filtered.append(tool)
+        tools = policy_filtered
         openai_tools = [
             {
                 "type": "function",
@@ -129,13 +156,99 @@ async def send_message(
                     arguments = {}
                 
                 logger.info(f"[{correlation_id}] Executing tool: {tool_name}")
+
+                tool = await tool_registry.get_tool(tool_name)
+                if not tool:
+                    raise HTTPException(status_code=404, detail=f"Tool not found: {tool_name}")
+
+                # Exposure check
+                exposed_refs = await exposure_manager.get_exposed_tools_for_user(
+                    context.user_id or "anonymous",
+                    context.roles
+                )
+                if not exposure_manager.is_tool_exposed(tool.name, tool.bundle_name, exposed_refs):
+                    raise HTTPException(status_code=403, detail="Tool not exposed for this role")
+
+                # Policy check
+                decision = await policy_engine.evaluate(
+                    action="invoke",
+                    resource=tool.name,
+                    context={"roles": context.roles, "user_id": context.user_id, "tool": tool}
+                )
+                if not decision.allowed:
+                    await audit_service.log_policy_decision(
+                        decision={"allowed": decision.allowed, "reason": decision.reason},
+                        context={"user_id": context.user_id, "tool_name": tool.name, "action": "invoke"},
+                        correlation_id=correlation_id
+                    )
+                    raise HTTPException(status_code=403, detail=decision.reason)
+
+                # Rate limiting
+                if settings.RATE_LIMIT_ENABLED and context.user_id:
+                    rate_multiplier = risk_policy_manager.get_rate_limit_multiplier(tool.rate_limit_tier)
+                    user_limit = int(settings.RATE_LIMIT_PER_USER * rate_multiplier)
+                    tool_limit = int(settings.RATE_LIMIT_PER_TOOL * rate_multiplier)
+
+                    user_rate = await rate_limiter.check_user_rate_limit(context.user_id, user_limit)
+                    if not user_rate.allowed:
+                        raise HTTPException(
+                            status_code=429,
+                            detail="Rate limit exceeded",
+                            headers={"Retry-After": str(user_rate.retry_after or 0)}
+                        )
+
+                    tool_rate = await rate_limiter.check_tool_rate_limit(tool.name, tool_limit)
+                    if not tool_rate.allowed:
+                        raise HTTPException(
+                            status_code=429,
+                            detail="Rate limit exceeded",
+                            headers={"Retry-After": str(tool_rate.retry_after or 0)}
+                        )
                 
                 # Execute the tool
-                result = await tool_executor.execute(
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    correlation_id=correlation_id
-                )
+                try:
+                    result = await tool_executor.execute(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        correlation_id=correlation_id,
+                        user_id=context.user_id,
+                        user_roles=context.roles,
+                        is_elevated=context.is_elevated
+                    )
+                    await audit_service.log_tool_call(
+                        tool_name=tool_name,
+                        params=arguments,
+                        result=result,
+                        latency=result.get("execution_time_ms", 0) / 1000.0,
+                        correlation_id=correlation_id,
+                        user_id=context.user_id or "unknown",
+                        status="success"
+                    )
+                except (AuthorizationError, PolicyError) as e:
+                    await audit_service.log_tool_call(
+                        tool_name=tool_name,
+                        params=arguments,
+                        result={},
+                        latency=0,
+                        correlation_id=correlation_id,
+                        user_id=context.user_id or "unknown",
+                        status="failure",
+                        error=str(e)
+                    )
+                    status_code = 403 if isinstance(e, AuthorizationError) else 409
+                    raise HTTPException(status_code=status_code, detail=str(e))
+                except Exception as e:
+                    await audit_service.log_tool_call(
+                        tool_name=tool_name,
+                        params=arguments,
+                        result={},
+                        latency=0,
+                        correlation_id=correlation_id,
+                        user_id=context.user_id or "unknown",
+                        status="failure",
+                        error=str(e)
+                    )
+                    raise
                 
                 tool_results.append({
                     "tool_name": tool_name,

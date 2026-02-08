@@ -5,15 +5,22 @@ Implements Model Context Protocol for tool discovery and execution
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.core.tools.registry import tool_registry
 from app.core.tools.executor import tool_executor
+from app.core.exposure.manager import exposure_manager
 from app.core.batch.batch_executor import batch_executor, BatchRequest as CoreBatchRequest
 from app.core.response.shaper import response_shaper, ResponseConfig
 from app.core.streaming.sse import create_sse_response, send_tool_progress, send_tool_result
+from app.core.policy.engine import policy_engine
+from app.core.policy.risk_policy import risk_policy_manager
+from app.core.cache.rate_limiter import rate_limiter
+from app.core.audit import audit_service
+from app.core.request_context import RequestContext, get_request_context
+from app.core.exceptions import AuthorizationError, PolicyError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -66,14 +73,19 @@ class ToolCallResult(BaseModel):
 @router.post("/mcp")
 async def mcp_handler(
     request: MCPRequest,
+    context: RequestContext = Depends(get_request_context),
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-    x_correlation_id: Optional[str] = Header(None, alias="X-Correlation-ID")
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")
 ) -> MCPResponse:
     """
     Main MCP Protocol Handler
     Supports: tools/list, tools/call
+    
+    NEW: Includes exposure governance (Layer B)
+    - tools/list is filtered by user's exposed tools
+    - tools/call validates tool is exposed (defense-in-depth)
     """
-    correlation_id = x_correlation_id or str(uuid.uuid4())
+    correlation_id = context.correlation_id or str(uuid.uuid4())
     logger.info(f"[{correlation_id}] MCP Request: {request.method}")
     
     # Simple API key validation for MVP
@@ -89,11 +101,17 @@ async def mcp_handler(
                 }
             )
     
+    user_context = {
+        "user_id": context.user_id,
+        "roles": context.roles,
+        "correlation_id": correlation_id
+    }
+    
     try:
         if request.method == "tools/list":
-            result = await handle_tools_list(correlation_id)
+            result = await handle_tools_list(correlation_id, user_context)
         elif request.method == "tools/call":
-            result = await handle_tools_call(request.params, correlation_id)
+            result = await handle_tools_call(request.params, correlation_id, context, idempotency_key)
         elif request.method == "initialize":
             result = await handle_initialize()
         else:
@@ -112,6 +130,8 @@ async def mcp_handler(
             result=result
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[{correlation_id}] MCP Error: {str(e)}")
         return MCPResponse(
@@ -138,30 +158,83 @@ async def handle_initialize() -> Dict[str, Any]:
     }
 
 
-async def handle_tools_list(correlation_id: str) -> Dict[str, Any]:
+async def handle_tools_list(correlation_id: str, user_context: Dict[str, Any]) -> Dict[str, Any]:
     """
     Handle tools/list request
+    
+    PHASE 1 NEW: Applies exposure filtering before returning tools.
+    Only returns tools user is exposed to based on role assignments.
+    
     Returns list of available tools with their schemas
     """
-    logger.info(f"[{correlation_id}] Listing tools")
+    user_id = user_context.get("user_id", "anonymous")
+    roles = user_context.get("roles", [])
     
-    tools = await tool_registry.list_tools()
+    logger.info(f"[{correlation_id}] Listing tools for user {user_id} (roles={roles})")
     
+    # Apply per-user rate limit if enabled
+    if settings.RATE_LIMIT_ENABLED and user_id:
+        user_limit = settings.RATE_LIMIT_PER_USER
+        rate = await rate_limiter.check_user_rate_limit(user_id, user_limit)
+        if not rate.allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded",
+                headers={"Retry-After": str(rate.retry_after or 0)}
+            )
+
+    # Get all active tools from registry
+    all_tools = await tool_registry.list_tools()
+    
+    # PHASE 1 NEW: Apply exposure filtering
+    if user_id and roles:
+        exposed_tools = await exposure_manager.filter_tools(
+            all_tools, user_id, roles
+        )
+        logger.info(
+            f"[{correlation_id}] Exposure filter: {len(all_tools)} → {len(exposed_tools)} tools"
+        )
+    else:
+        # Fallback if no user context (shouldn't happen in practice)
+        exposed_tools = all_tools
+        logger.warning(f"[{correlation_id}] No user context for exposure filtering, returning all tools")
+    
+    # Apply policy engine for discovery
+    policy_filtered = []
+    for tool in exposed_tools:
+        decision = await policy_engine.evaluate(
+            action="read",
+            resource=tool.name,
+            context={"roles": roles, "user_id": user_id, "tool": tool}
+        )
+        if decision.allowed:
+            policy_filtered.append(tool)
+        else:
+            await audit_service.log_policy_decision(
+                decision={"allowed": decision.allowed, "reason": decision.reason},
+                context={"user_id": user_id, "tool_name": tool.name, "action": "read"},
+                correlation_id=correlation_id
+            )
+
+    # Build tool definitions for response
     tool_definitions = []
-    for tool in tools:
+    for tool in policy_filtered:
         tool_definitions.append({
             "name": tool.name,
             "description": tool.description,
-            "inputSchema": tool.input_schema
+            "inputSchema": tool.input_schema,
+            "bundle": tool.bundle_name  # Include bundle metadata
         })
     
-    logger.info(f"[{correlation_id}] Found {len(tool_definitions)} tools")
+    logger.info(f"[{correlation_id}] Returning {len(tool_definitions)} exposed tools")
     return {"tools": tool_definitions}
 
 
 async def handle_tools_call(
     params: Optional[Dict[str, Any]],
-    correlation_id: str
+    correlation_id: str,
+    context: RequestContext,
+    idempotency_key: Optional[str]
 ) -> Dict[str, Any]:
     """
     Handle tools/call request
@@ -178,13 +251,100 @@ async def handle_tools_call(
     
     logger.info(f"[{correlation_id}] Calling tool: {tool_name}")
     logger.debug(f"[{correlation_id}] Arguments: {arguments}")
+
+    tool = await tool_registry.get_tool(tool_name)
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found")
+
+    # Exposure check (Layer B)
+    exposed_refs = await exposure_manager.get_exposed_tools_for_user(
+        context.user_id or "anonymous",
+        context.roles
+    )
+    if not exposure_manager.is_tool_exposed(tool.name, tool.bundle_name, exposed_refs):
+        raise HTTPException(status_code=403, detail="Tool not exposed for this role")
+
+    # Policy check (Layer A)
+    decision = await policy_engine.evaluate(
+        action="invoke",
+        resource=tool.name,
+        context={"roles": context.roles, "user_id": context.user_id, "tool": tool}
+    )
+    if not decision.allowed:
+        await audit_service.log_policy_decision(
+            decision={"allowed": decision.allowed, "reason": decision.reason},
+            context={"user_id": context.user_id, "tool_name": tool.name, "action": "invoke"},
+            correlation_id=correlation_id
+        )
+        raise HTTPException(status_code=403, detail=decision.reason)
+
+    # Rate limiting
+    if settings.RATE_LIMIT_ENABLED and context.user_id:
+        rate_multiplier = risk_policy_manager.get_rate_limit_multiplier(tool.rate_limit_tier)
+        user_limit = int(settings.RATE_LIMIT_PER_USER * rate_multiplier)
+        tool_limit = int(settings.RATE_LIMIT_PER_TOOL * rate_multiplier)
+
+        user_rate = await rate_limiter.check_user_rate_limit(context.user_id, user_limit)
+        if not user_rate.allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded",
+                headers={"Retry-After": str(user_rate.retry_after or 0)}
+            )
+
+        tool_rate = await rate_limiter.check_tool_rate_limit(tool.name, tool_limit)
+        if not tool_rate.allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded",
+                headers={"Retry-After": str(tool_rate.retry_after or 0)}
+            )
     
     # Execute the tool
-    result = await tool_executor.execute(
-        tool_name=tool_name,
-        arguments=arguments,
-        correlation_id=correlation_id
-    )
+    try:
+        result = await tool_executor.execute(
+            tool_name=tool_name,
+            arguments=arguments,
+            correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
+            user_id=context.user_id,
+            user_roles=context.roles,
+            is_elevated=context.is_elevated
+        )
+        await audit_service.log_tool_call(
+            tool_name=tool_name,
+            params=arguments,
+            result=result,
+            latency=result.get("execution_time_ms", 0) / 1000.0,
+            correlation_id=correlation_id,
+            user_id=context.user_id or "unknown",
+            status="success"
+        )
+    except (AuthorizationError, PolicyError) as e:
+        await audit_service.log_tool_call(
+            tool_name=tool_name,
+            params=arguments,
+            result={},
+            latency=0,
+            correlation_id=correlation_id,
+            user_id=context.user_id or "unknown",
+            status="failure",
+            error=str(e)
+        )
+        status_code = 403 if isinstance(e, AuthorizationError) else 409
+        raise HTTPException(status_code=status_code, detail=str(e))
+    except Exception as e:
+        await audit_service.log_tool_call(
+            tool_name=tool_name,
+            params=arguments,
+            result={},
+            latency=0,
+            correlation_id=correlation_id,
+            user_id=context.user_id or "unknown",
+            status="failure",
+            error=str(e)
+        )
+        raise
     
     return {
         "content": [
@@ -223,16 +383,24 @@ async def list_tools_rest():
 async def call_tool_rest(
     tool_name: str,
     arguments: Dict[str, Any],
+    context: RequestContext = Depends(get_request_context),
     x_correlation_id: Optional[str] = Header(None, alias="X-Correlation-ID")
 ):
     """REST endpoint to call a tool (for testing)"""
     correlation_id = x_correlation_id or str(uuid.uuid4())
     
-    result = await tool_executor.execute(
-        tool_name=tool_name,
-        arguments=arguments,
-        correlation_id=correlation_id
-    )
+    try:
+        result = await tool_executor.execute(
+            tool_name=tool_name,
+            arguments=arguments,
+            correlation_id=correlation_id,
+            user_id=context.user_id,
+            user_roles=context.roles,
+            is_elevated=context.is_elevated
+        )
+    except (AuthorizationError, PolicyError) as e:
+        status_code = 403 if isinstance(e, AuthorizationError) else 409
+        raise HTTPException(status_code=status_code, detail=str(e))
     
     return {
         "tool_name": tool_name,
@@ -279,6 +447,7 @@ class BatchExecutionResponse(BaseModel):
 @router.post("/mcp/batch", response_model=BatchExecutionResponse)
 async def execute_batch_tools(
     request: BatchExecutionRequest,
+    context: RequestContext = Depends(get_request_context),
     x_correlation_id: Optional[str] = Header(None, alias="X-Correlation-ID")
 ):
     """
@@ -307,11 +476,20 @@ async def execute_batch_tools(
     
     # Execute batch
     if request.parallel:
-        results = await batch_executor.execute_batch(batch_requests, correlation_id)
+        results = await batch_executor.execute_batch(
+            batch_requests,
+            correlation_id,
+            user_id=context.user_id,
+            user_roles=context.roles,
+            is_elevated=context.is_elevated
+        )
     else:
         results = await batch_executor.execute_batch_sequential(
             batch_requests,
             correlation_id,
+            user_id=context.user_id,
+            user_roles=context.roles,
+            is_elevated=context.is_elevated,
             stop_on_error=request.stop_on_error
         )
     
@@ -406,6 +584,7 @@ async def call_tool_with_stream(
     tool_name: str,
     arguments: Dict[str, Any],
     stream_id: Optional[str] = None,
+    context: RequestContext = Depends(get_request_context),
     x_correlation_id: Optional[str] = Header(None, alias="X-Correlation-ID")
 ):
     """
@@ -441,7 +620,10 @@ async def call_tool_with_stream(
             result = await tool_executor.execute(
                 tool_name=tool_name,
                 arguments=arguments,
-                correlation_id=correlation_id
+                correlation_id=correlation_id,
+                user_id=context.user_id,
+                user_roles=context.roles,
+                is_elevated=context.is_elevated
             )
             
             # Send result

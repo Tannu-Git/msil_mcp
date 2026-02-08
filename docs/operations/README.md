@@ -1,7 +1,7 @@
 # Operations Runbook
 
-**Document Version**: 2.0  
-**Last Updated**: January 31, 2026  
+**Document Version**: 2.1  
+**Last Updated**: February 2, 2026  
 **Classification**: Internal
 
 ---
@@ -56,6 +56,18 @@ redis-cli -h $REDIS_HOST ping | grep -q PONG && echo "✓ Redis: Healthy" || ech
 
 echo "================================="
 ```
+
+### 2.3 Exposure Governance Checks (Phase 3)
+
+**Quick Validation**:
+- Confirm role permissions: `GET /admin/exposure/roles/{role}`
+- Confirm bundles: `GET /admin/exposure/bundles`
+- Confirm filtered tool list: `POST /api/mcp` with `tools/list`
+
+**Operational Notes**:
+- Permission changes invalidate exposure cache automatically.
+- Cache TTL is configurable with `EXPOSURE_CACHE_TTL_SECONDS` (default 3600 seconds).
+- If exposure changes are not reflected, verify admin audit logs and restart mcp-server.
 
 ---
 

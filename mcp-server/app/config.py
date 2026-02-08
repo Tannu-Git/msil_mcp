@@ -13,10 +13,13 @@ class Settings(BaseSettings):
     APP_NAME: str = "MSIL MCP Server"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
+    ENVIRONMENT: str = "dev"
     
     # Demo Mode - bypasses security for MVP demo
     DEMO_MODE: bool = True
     DEMO_MODE_USERS: str = "admin@msil.com:admin123,developer@msil.com:dev123,operator@msil.com:op123"
+    DEMO_MODE_AUTH_BYPASS: bool = True
+    DEMO_MODE_DEFAULT_ROLE: str = "admin"
     
     # Server
     HOST: str = "0.0.0.0"
@@ -67,6 +70,11 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    AUTH_REQUIRED: bool = True
+    USER_ID_CLAIM: str = "sub"
+    ROLES_CLAIM: str = "roles"
+    SCOPES_CLAIM: str = "scope"
+    CLIENT_ID_CLAIM: str = "azp"
     
     # OIDC Configuration (P0-1)
     OIDC_ENABLED: bool = False
