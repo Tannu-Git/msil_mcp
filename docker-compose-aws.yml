@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  # FastAPI Backend Service - optimized for t4g.nano
+  backend:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: msil-backend
+    ports:
+      - "127.0.0.1:8000:8000"  # Only accessible from localhost (nginx proxies)
+    environment:
+      # Application
+      APP_NAME: "MSIL MCP Server"
+      APP_VERSION: "1.0.0"
+      DEBUG: "false"
+      ENVIRONMENT: "production"
+      
+      # Server
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      
+      # Database - SQLite on persistent EBS volume
+      DATABASE_URL: "sqlite+aiosqlite:////data/db/msil_mcp.db"
+      
+      # Redis - Disabled for t4g.nano (memory constrained)
+      REDIS_ENABLED: "false"
+      REDIS_URL: ""
+      
+      # API Gateway
+      API_GATEWAY_MODE: "mock"
+      MOCK_API_BASE_URL: "http://localhost:8080"
+      
+      # Security
+      API_KEY: "msil-mcp-dev-key-2026"
+      CORS_ORIGINS: "*"
+      
+      # OpenAI (set via environment or .env)
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_MODEL: "gpt-4-turbo-preview"
+      
+      # Auth
+      JWT_SECRET: "msil-mcp-jwt-secret-key-change-in-production-2026"
+      JWT_ALGORITHM: "HS256"
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: "7"
+      
+      # Demo Mode - Enables password bypass for demo
+      DEMO_MODE: "true"
+      DEMO_MODE_AUTH_BYPASS: "true"
+      DEMO_MODE_USERS: "admin@msil.com:admin123,developer@msil.com:dev123,operator@msil.com:op123"
+      
+      # Logging
+      LOG_LEVEL: "INFO"
+    
+    volumes:
+      - /data/db:/data/db
+      - /data/logs/backend:/app/logs
+    
+    restart: unless-stopped
+    
+    # Memory limit - stay within t4g.nano constraints
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 200M
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+  
+  # Nginx Reverse Proxy & Static File Server
+  nginx:
+    image: nginx:alpine
+    container_name: msil-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/nginx/conf.d/msil.conf:/etc/nginx/conf.d/default.conf:ro
+      - /etc/ssl/certs/msil:/etc/ssl/certs/msil:ro
+      - ./admin-ui/dist:/usr/share/nginx/html/admin:ro
+      - ./chat-ui/dist:/usr/share/nginx/html/chat:ro
+      - /data/logs/nginx:/var/log/nginx
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    
+    # Memory limit
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+        reservations:
+          memory: 32M
+    
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  msil-data:
+    driver: local
