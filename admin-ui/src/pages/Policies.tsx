@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { Shield, Plus, Trash2, Edit2, X, Users } from 'lucide-react';
 import { addPolicyRolePermission, createPolicyRole, deletePolicyRole, fetchPolicyRoles, removePolicyRolePermission } from '../lib/api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
+import { getApiUrl } from '@/lib/config';
 
 interface Role {
   name: string;
@@ -41,7 +42,7 @@ export default function Policies() {
 
   const loadTools = async () => {
     try {
-      const response = await fetch('/api/analytics/tools/list?limit=1000', {
+      const response = await fetch(getApiUrl('/api/analytics/tools/list?limit=1000', {
         headers: {
           'x-api-key': 'msil-mcp-dev-key-2026',
           'Authorization': 'Bearer ' + (localStorage.getItem('token') || 'mock-jwt-token')
@@ -125,7 +126,7 @@ export default function Policies() {
 
   const viewRoleUsers = async (roleName: string) => {
     try {
-      const response = await fetch(`/api/admin/roles/${roleName}/users`, {
+      const response = await fetch(getApiUrl(`/api/admin/roles/${roleName}/users`, {
         headers: {
           'x-api-key': 'msil-mcp-dev-key-2026',
           'Authorization': 'Bearer ' + (localStorage.getItem('token') || 'mock-jwt-token')

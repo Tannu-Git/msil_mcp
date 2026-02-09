@@ -18,4 +18,8 @@ export default defineConfig({
       },
     },
   },
+  // Environment variables with VITE_ prefix are exposed to client
+  define: {
+    'import.meta.env.VITE_API_URL': JSON.stringify(process.env.VITE_API_URL || ''),
+  },
 })

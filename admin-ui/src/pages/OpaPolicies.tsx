@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { Shield, Save, AlertCircle, Play, CheckCircle } from 'lucide-react';
 import Editor from '@monaco-editor/react';
+import { getApiUrl } from '@/lib/config';
 
 export default function OpaPolicies() {
   const [policyContent, setPolicyContent] = useState('');
@@ -21,7 +22,7 @@ export default function OpaPolicies() {
 
   const loadPolicy = async () => {
     try {
-      const response = await fetch('/api/admin/opa/policies/authz', {
+      const response = await fetch(getApiUrl('/api/admin/opa/policies/authz'), {
         headers: {
           'x-api-key': 'msil-mcp-dev-key-2026',
           'Authorization': 'Bearer ' + (localStorage.getItem('token') || 'mock-jwt-token')
@@ -43,7 +44,7 @@ export default function OpaPolicies() {
     setSaving(true);
     setSaveSuccess(false);
     try {
-      const response = await fetch('/api/admin/opa/policies/authz', {
+      const response = await fetch(getApiUrl('/api/admin/opa/policies/authz'), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -72,7 +73,7 @@ export default function OpaPolicies() {
     setTesting(true);
     setTestResult(null);
     try {
-      const response = await fetch('/api/admin/opa/policies/test', {
+      const response = await fetch(getApiUrl('/api/admin/opa/policies/test'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { Users as UsersIcon, Shield, Search, Edit2, Check } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
+import { getApiUrl } from '@/lib/config';
 
 interface User {
   username: string;
@@ -31,13 +32,13 @@ export default function Users() {
     try {
       // Load users and roles
       const [usersResponse, rolesResponse] = await Promise.all([
-        fetch('/api/admin/users', {
+        fetch(getApiUrl('/api/admin/users'), {
           headers: {
             'x-api-key': 'msil-mcp-dev-key-2026',
             'Authorization': 'Bearer ' + (localStorage.getItem('token') || 'mock-jwt-token')
           }
         }),
-        fetch('/api/admin/policies/roles', {
+        fetch(getApiUrl('/api/admin/policies/roles'), {
           headers: {
             'x-api-key': 'msil-mcp-dev-key-2026',
             'Authorization': 'Bearer ' + (localStorage.getItem('token') || 'mock-jwt-token')
@@ -79,7 +80,7 @@ export default function Users() {
     if (!selectedUser) return;
 
     try {
-      const response = await fetch(`/api/admin/users/${selectedUser.username}/roles`, {
+      const response = await fetch(getApiUrl(`/api/admin/users/${selectedUser.username}/roles`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

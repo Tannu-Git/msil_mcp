@@ -1,7 +1,8 @@
-import { useState } from 'react'
+﻿import { useState } from 'react'
 import { OpenAPIUpload } from '@/components/import/OpenAPIUpload'
 import { ToolPreview } from '@/components/import/ToolPreview'
 import { CheckCircle, AlertCircle } from 'lucide-react'
+import { getApiUrl } from '@/lib/config'
 
 interface UploadResult {
   spec_id: string
@@ -33,7 +34,7 @@ export function Import() {
 
     setApproving(true)
     try {
-      const response = await fetch('/api/admin/openapi/approve', {
+      const response = await fetch(getApiUrl('/api/admin/openapi/approve', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

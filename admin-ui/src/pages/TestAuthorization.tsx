@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { Shield, Play, CheckCircle, XCircle, AlertCircle, Users, Wrench } from 'lucide-react';
+import { getApiUrl } from '@/lib/config';
 
 interface TestResult {
   allowed: boolean;
@@ -34,7 +35,7 @@ export default function TestAuthorization() {
 
   const loadUsers = async () => {
     try {
-      const response = await fetch('/api/admin/users', {
+      const response = await fetch(getApiUrl('/api/admin/users'), {
         headers: {
           'x-api-key': 'msil-mcp-dev-key-2026',
           'Authorization': 'Bearer ' + (localStorage.getItem('token') || 'mock-jwt-token')
@@ -52,7 +53,7 @@ export default function TestAuthorization() {
 
   const loadTools = async () => {
     try {
-      const response = await fetch('/api/analytics/tools/list?limit=1000', {
+      const response = await fetch(getApiUrl('/api/analytics/tools/list?limit=1000'), {
         headers: {
           'x-api-key': 'msil-mcp-dev-key-2026',
           'Authorization': 'Bearer ' + (localStorage.getItem('token') || 'mock-jwt-token')
@@ -80,7 +81,7 @@ export default function TestAuthorization() {
     const startTime = Date.now();
 
     try {
-      const response = await fetch('/api/admin/test-authz', {
+      const response = await fetch(getApiUrl('/api/admin/test-authz'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

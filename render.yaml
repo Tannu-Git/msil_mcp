@@ -1,0 +1,86 @@
+# Render.com Configuration for MSIL MCP Server
+# This file defines how Render deploys the backend service
+
+services:
+  # FastAPI Backend Service
+  - type: web
+    name: msil-mcp-backend
+    runtime: docker
+    dockerfilePath: ./mcp-server/Dockerfile
+    dockerContext: ./mcp-server
+    plan: free
+    region: singapore
+    branch: main
+    healthCheckPath: /health
+    
+    # Environment Variables (secrets set in Render dashboard)
+    envVars:
+      # Application
+      - key: APP_NAME
+        value: MSIL MCP Server
+      - key: APP_VERSION
+        value: 1.0.0
+      - key: DEBUG
+        value: false
+      
+      # Server
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 8000
+      
+      # Database - SQLite for demo (no RDS cost)
+      - key: DATABASE_URL
+        value: sqlite+aiosqlite:///./data/msil_mcp_demo.db
+      
+      # Redis - Disabled for demo (no ElastiCache cost)
+      - key: REDIS_URL
+        value: ""
+      
+      # API Gateway Mode - MSIL APIM for production demo
+      - key: API_GATEWAY_MODE
+        value: msil_apim
+      
+      # MSIL APIM - Set these in Render dashboard (sensitive)
+      - key: MSIL_APIM_BASE_URL
+        sync: false  # Set manually in dashboard
+      - key: MSIL_APIM_SUBSCRIPTION_KEY
+        sync: false  # Set manually in dashboard
+      - key: MSIL_APIM_CLIENT_ID
+        sync: false
+      - key: MSIL_APIM_CLIENT_SECRET
+        sync: false
+      - key: MSIL_APIM_TENANT_ID
+        sync: false
+      
+      # OpenAI - Set in Render dashboard
+      - key: OPENAI_API_KEY
+        sync: false  # Set manually in dashboard
+      - key: OPENAI_MODEL
+        value: gpt-4-turbo-preview
+      
+      # Security - Generate secure key in Render dashboard
+      - key: API_KEY
+        sync: false  # Set manually in dashboard
+      
+      # CORS - Vercel domains will be added after deployment
+      # Format: https://your-admin-ui.vercel.app,https://your-chat-ui.vercel.app
+      - key: CORS_ORIGINS
+        value: "*"  # Update after Vercel deployment
+      
+      # Logging
+      - key: LOG_LEVEL
+        value: INFO
+      
+      # Environment
+      - key: ENVIRONMENT
+        value: demo
+    
+    # Persistent disk for SQLite database
+    disk:
+      name: msil-mcp-data
+      mountPath: /app/data
+      sizeGB: 1
+    
+    # Auto-deploy on git push
+    autoDeploy: true

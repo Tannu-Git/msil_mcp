@@ -1,6 +1,7 @@
-import { useState } from 'react'
+﻿import { useState } from 'react'
 import { Upload, FileJson, Link as LinkIcon, Loader2, CheckCircle, XCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { getApiUrl } from '@/lib/config'
 
 interface OpenAPIUploadProps {
   onUploadSuccess: (data: any) => void
@@ -27,7 +28,7 @@ export function OpenAPIUpload({ onUploadSuccess }: OpenAPIUploadProps) {
         formData.append('bundle_name', bundleName)
       }
 
-      const response = await fetch('/api/admin/openapi/upload', {
+      const response = await fetch(getApiUrl('/api/admin/openapi/upload', {
         method: 'POST',
         headers: {
           'x-api-key': 'msil-mcp-dev-key-2026',
@@ -66,7 +67,7 @@ export function OpenAPIUpload({ onUploadSuccess }: OpenAPIUploadProps) {
         ...(bundleName && { bundle_name: bundleName })
       })
 
-      const response = await fetch(`/api/admin/openapi/import-url?${params}`, {
+      const response = await fetch(getApiUrl(`/api/admin/openapi/import-url?${params}`, {
         method: 'POST',
         headers: {
           'x-api-key': 'msil-mcp-dev-key-2026',

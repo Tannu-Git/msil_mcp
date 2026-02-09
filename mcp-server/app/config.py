@@ -36,6 +36,20 @@ class Settings(BaseSettings):
     CACHE_TTL: int = 300  # 5 minutes
     CACHE_MAX_SIZE: int = 1000  # Max cache entries
     
+    @property
+    def is_sqlite(self) -> bool:
+        """Check if using SQLite database"""
+        return "sqlite" in self.DATABASE_URL.lower()
+    
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Parse CORS origins into a list, supporting wildcards"""
+        if self.CORS_ORIGINS == "*":
+            return ["*"]
+        
+        origins = [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
+        return origins
+    
     # API Gateway Mode: "mock" or "msil_apim"
     API_GATEWAY_MODE: str = "mock"
     
